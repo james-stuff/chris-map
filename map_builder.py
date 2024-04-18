@@ -29,23 +29,34 @@ def build_map(from_existing_csv: bool = False):
     m = folium.Map(location=(51.5, -0.15), tiles="cartodb positron", zoom_start=9)
     fg_by_year = {year: folium.FeatureGroup(name=f"{year}")
                   for year in pd.unique(df_hikes["Date"].dt.year)}    #.apply(lambda d: d[:4]))}
-    walks_on_map = 0
+    walks_on_map, aggregate_distance = 0, 0
     for ind in df_hikes.index:
         hike_data = df_hikes.loc[ind].to_dict()
         year_fg = fg_by_year[hike_data["Date"].year]
         make_line(hike_data).add_to(year_fg)
         walks_on_map += 1
+        aggregate_distance += hike_data["Distance"]
 
-    open_div = (f"<div style= 'font-family:Helvetica, Avenir, Helvetica neue, Sans-serif;"
-                f"font-size:12pt;color:Black; outline:2px black; background-color:white;'>")
-    folium.Marker((50.98, -1.35), icon=folium.DivIcon(
-        html=f"{open_div}{walks_on_map} hikes plotted</div>",
-        icon_size=(130, 20),
-    )).add_to(m)
+    # open_div = (f"<div style= 'font-family:Helvetica, Avenir, Helvetica neue, Sans-serif;"
+    #             f"font-size:12pt;color:Black; outline:2px black; background-color:white;'>")
+    # folium.Marker((50.98, -1.35), icon=folium.DivIcon(
+    #     html=f"{open_div}{walks_on_map} hikes plotted</div>",
+    #     icon_size=(130, 20),
+    # )).add_to(m)
 
     for yfg in fg_by_year.values():
         yfg.add_to(m)
     m.add_child(folium.LayerControl(position='topright', collapsed=False, autoZIndex=True))
+
+    map_title = f"(Almost) every hike Chris has organised for Free Outdoor Trips from London"
+    title_html = f'<h3 style="position:absolute;z-index:100000;left:5vw;background-color:white;" >{map_title}</h1>'
+    m.get_root().html.add_child(folium.Element(title_html))
+
+    ave_length = aggregate_distance / walks_on_map
+    map_sub_title = (f"{walks_on_map} hikes plotted, average length "
+                     f"{distance_description(ave_length)}")
+    title_html = f'<h4 style="position:absolute;z-index:100000;top:3vw;left:5vw;background-color:white;" >{map_sub_title}</h1>'
+    m.get_root().html.add_child(folium.Element(title_html))
 
     map_file = "page\\map.html"
     m.save(map_file)
@@ -56,11 +67,10 @@ def make_line(hike_data: dict) -> folium.GeoJson:
     with open(f"routes\\{hike_data['URL']}.pts", "r") as file:
         points = [eval(ln) for ln in file.read().split("\n")]
     date = arrow.get(hike_data["Date"])
-    dist_mls, dist_kms = (hike_data["Distance"] / factor for factor in (1_609, 1_000))
     tooltip = (f"{date.format('ddd Do MMM YYYY')}<br/>"
                f"{hike_data['Title']}<br/>"
                f"{route_description(hike_data)}<br/>"
-               f"{dist_mls:.1f} miles / {dist_kms:.1f} km")
+               f"{distance_description(hike_data['Distance'])}")
     gj = geojson.FeatureCollection([geojson.LineString(points)])
     return folium.GeoJson(
         gj,
@@ -68,6 +78,12 @@ def make_line(hike_data: dict) -> folium.GeoJson:
         highlight_function=lambda feature: {"color": "red", "opacity": 1.0, "weight": 3},
         tooltip=tooltip
     )
+
+
+def distance_description(distance_metres: int) -> str:
+    dist_mls, dist_kms = (distance_metres / factor
+                          for factor in (1_609, 1_000))
+    return f"{dist_mls:.1f} miles / {dist_kms:.1f} km"
 
 
 def route_description(data: dict) -> str:
