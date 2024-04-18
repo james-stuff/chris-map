@@ -28,7 +28,7 @@ def build_map(from_existing_csv: bool = False):
 
     m = folium.Map(location=(51.5, -0.15), tiles="cartodb positron", zoom_start=9)
     fg_by_year = {year: folium.FeatureGroup(name=f"{year}")
-                  for year in pd.unique(df_hikes["Date"].dt.year)}    #.apply(lambda d: d[:4]))}
+                  for year in pd.unique(df_hikes["Date"].dt.year)}
     walks_on_map, aggregate_distance = 0, 0
     for ind in df_hikes.index:
         hike_data = df_hikes.loc[ind].to_dict()
@@ -37,25 +37,19 @@ def build_map(from_existing_csv: bool = False):
         walks_on_map += 1
         aggregate_distance += hike_data["Distance"]
 
-    # open_div = (f"<div style= 'font-family:Helvetica, Avenir, Helvetica neue, Sans-serif;"
-    #             f"font-size:12pt;color:Black; outline:2px black; background-color:white;'>")
-    # folium.Marker((50.98, -1.35), icon=folium.DivIcon(
-    #     html=f"{open_div}{walks_on_map} hikes plotted</div>",
-    #     icon_size=(130, 20),
-    # )).add_to(m)
-
     for yfg in fg_by_year.values():
         yfg.add_to(m)
     m.add_child(folium.LayerControl(position='topright', collapsed=False, autoZIndex=True))
 
     map_title = f"(Almost) every hike Chris has organised for Free Outdoor Trips from London"
-    title_html = f'<h3 style="position:absolute;z-index:100000;left:5vw;background-color:white;" >{map_title}</h1>'
-    m.get_root().html.add_child(folium.Element(title_html))
+    # title_html = f'<h3 style="position:absolute;z-index:100000;left:5vw;background-color:white;" >{map_title}</h1>'
+    # m.get_root().html.add_child(folium.Element(title_html))
 
     ave_length = aggregate_distance / walks_on_map
     map_sub_title = (f"{walks_on_map} hikes plotted, average length "
                      f"{distance_description(ave_length)}")
-    title_html = f'<h4 style="position:absolute;z-index:100000;top:3vw;left:5vw;background-color:white;" >{map_sub_title}</h1>'
+    title_html = (f'<h4 style="position:fixed;z-index:100000;bottom:0px;left:20px;background-color:white;" >'
+                  f'{map_title}<br>{map_sub_title}</h4>')
     m.get_root().html.add_child(folium.Element(title_html))
 
     map_file = "page\\map.html"
@@ -74,7 +68,7 @@ def make_line(hike_data: dict) -> folium.GeoJson:
     gj = geojson.FeatureCollection([geojson.LineString(points)])
     return folium.GeoJson(
         gj,
-        style_function=lambda feature: {"color": "blue", "opacity": 0.3, "weight": 5},
+        style_function=lambda feature: {"color": "green", "opacity": 0.3, "weight": 5},
         highlight_function=lambda feature: {"color": "red", "opacity": 1.0, "weight": 3},
         tooltip=tooltip
     )
@@ -316,6 +310,21 @@ def scrape_past_events_for_chris_hikes() -> pd.DataFrame:
             url = re.search(r"\d{9}", event.find("a")["href"]).group()
             event_details.append((date_string, title, attendees, url, "Free"))
     return pd.DataFrame(data=event_details, columns=["Date", "Title", "Attendees", "URL", "Source"])
+
+
+def correct_time_for_manually_generated_gpx(file_fragment: str, correct_date: arrow.Arrow):
+    folder = "gpx\\04"
+    filename = [*filter(lambda fn: re.search(file_fragment, fn) and
+                        fn[-4:] == ".gpx",
+                        os.listdir(folder))][0]
+    print(filename, correct_date)
+    with open(f"{folder}\\{filename}", "r") as file:
+        text = file.read()
+    os.rename(f"{folder}\\{filename}", f"{folder}\\{filename[:-4]}._gpx")
+    incorrect_date = re.search("<time>.+</time>", text).group()[6:16]
+    new_text = text.replace(incorrect_date, correct_date.format("YYYY-MM-DD"))
+    with open(f"{folder}\\{filename}", "w") as new_file:
+        new_file.write(new_text)
 
 
 if __name__ == "__main__":

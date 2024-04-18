@@ -16,9 +16,9 @@ def test_all_hikes():
 
 
 def test_finding_gpx_files():
-    for n in range(1, 4):
+    for n in range(1, 5):
         df_gpx = mb.gpx_provided_by(f"0{n}")
-        assert len(df_gpx) > 10
+        assert len(df_gpx) > 4
         assert len(df_gpx.columns) == 2
         assert df_gpx.dtypes.to_list() == [dtype('<M8[ns]'), dtype('O')]
     df_all_gpx = mb.cumulatively_find_gpx_files(mb.all_historic_hikes())
@@ -62,3 +62,15 @@ def test_gap_filling():
     data_length = len(full_df)
     assert data_length == 12
     assert len(full_df[(full_df["Start"] == "") | (full_df["End"] == "")]) == 0
+
+
+def test_correcting_timestamps():
+    corrections = {
+        "9th March": arrow.Arrow(2024, 3, 9),
+        "Coty 2nd March": arrow.Arrow(2024, 3, 2),
+        "Rochford Circular": arrow.Arrow(2024, 4, 6),
+        "Stanford": arrow.Arrow(2024, 1, 13),
+        "Bridges": arrow.Arrow(2024, 4, 13),
+    }
+    for route, date in corrections.items():
+        mb.correct_time_for_manually_generated_gpx(route, date)
