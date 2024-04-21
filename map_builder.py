@@ -12,6 +12,7 @@ import gpxpy
 from gpxpy import geo
 import folium
 import geojson
+import argparse
 
 
 def build_map(from_existing_csv: bool = False):
@@ -328,4 +329,19 @@ def correct_time_for_manually_generated_gpx(file_fragment: str, correct_date: ar
 
 
 if __name__ == "__main__":
-    build_map()
+    my_parser = argparse.ArgumentParser(description='Map builder')
+    my_parser.add_argument('Operation',
+                           metavar='operation',
+                           type=str,
+                           help='either [B] build map or [S] scrape meetup for new events')
+    args = my_parser.parse_args()
+    op = args.Operation.upper()
+
+    options = {
+        "B": build_map,
+        "S": check_and_update_meetup_events,
+    }
+    if op in options:
+        options[op]()
+    else:
+        print(f"{op} is not a valid operation code")
