@@ -1,13 +1,13 @@
-import os
-
 import map_builder as mb
+import os
 import arrow
 import pandas as pd
 from numpy import dtype
 from gpxpy import geo
+import shutil
 
 
-def test_all_hikes():
+def test_historic_hikes():
     df_scraped = mb.hikes_from_original_meetup_scrape()
     assert len(df_scraped) == 192
     assert len(df_scraped.loc[df_scraped["Date"].dt.date == arrow.Arrow(2023, 10, 28).date()]) == 1
@@ -27,12 +27,7 @@ def test_finding_gpx_files():
         assert df_gpx.dtypes.to_list() == [dtype('<M8[ns]'), dtype('O')]
     df_all_gpx = mb.cumulatively_find_gpx_files(mb.all_historic_hikes())
     assert len(df_all_gpx.dropna(subset="GPX")) > 116
-    print(df_all_gpx.dropna(subset="GPX"))
     # TODO: test for conversion of suunto files
-    # TODO: two different processes: use existing HikeDetails.csv and/or generate from scratch?
-    #       probably the former.  This could be pushed to github
-    #       Probably don't store .gpx files on github.  If any have changed, they should
-    #       be renamed by the system and this would appear as a change in HikeDetails.csv
 
 
 def test_scraping_meetup():
@@ -40,16 +35,18 @@ def test_scraping_meetup():
 
 
 def test_build_hikes_table():
-    print(mb.all_known_hikes())
-    print(mb.all_known_hikes().info())
     df_all_hikes = mb.cumulatively_find_gpx_files(mb.all_known_hikes()).dropna(subset="GPX")
-    df = mb.generate_hike_details_for_map(df_all_hikes)
-    print(df)
-    expected_columns = {"Date", "Title", "Attendees", "URL", "Source", "Start", "End", "Distance", "GPX"}
-    assert set(df.columns) == expected_columns
+    df = mb.generate_hike_details_csv(df_all_hikes)
+    assert os.path.getmtime("HikeDetails.csv") > arrow.now().timestamp() - 10
+    expected_columns = {
+        "Date": "datetime64[ns]", "Title": "object", "Attendees": "float64",
+        "URL": "object", "Source": "object", "GPX": "object",
+        "Start": "object", "End": "object", "Distance": "int64"
+    }
+    assert list(df.columns) == [*expected_columns.keys()]
     data_rows = len(df)
     assert data_rows >= 118
-    assert all(isinstance(d, int) for d in df["Distance"])
+    assert all(df[c].dtype == v for c, v in expected_columns.items())
     assert len(df.dropna()) == data_rows
 
 
@@ -60,7 +57,7 @@ def test_build_from_existing():
 def test_gap_filling():
     df_iman_info = mb.cumulatively_find_gpx_files(mb.all_known_hikes(), ["03"]).dropna(subset="GPX")
     print(df_iman_info)
-    df = mb.generate_hike_details_for_map(df_iman_info)
+    df = mb.generate_hike_details_csv(df_iman_info)
     full_df = mb.fill_blanks_in_hike_details(df)
     print(full_df)
     data_length = len(full_df)
@@ -109,36 +106,35 @@ def test_working_with_points_files():
 
 
 def test_add_new_hike_workflow():
-    """ 1. drop new .gpx file in appropriate folder
-        2. new file is detected (because it is not in HikeDetails.csv?  Because it succeeds map.html?)
-        3. new points file is created
-        4. new or updated HikeDetails.csv is created
-        Whole process should take less than ten seconds"""
-    # todo: next step is delete any points file whose age is greater
-    #       than that of its corresponding .gpx file?
-    os.rename("routes\\300371735.pts", "routes\\300371735._pts")
-    start_time = arrow.now().timestamp()
+    # replace an existing .gpx file with a more up-to-date one in a different folder
+    original_dymchurch = "gpx\\02\\7104076057new.gpx"
+    test_file = "gpx\\test\\7104076057-Dymchurch-unsnipped.gpx"
+    os.rename(original_dymchurch, original_dymchurch.replace(".gpx", "._gpx"))
+    shutil.copy(test_file, "gpx\\04\\")
+    tf_in_new_home = test_file.replace("test", "04")
+    assert os.path.getmtime(tf_in_new_home) > arrow.now().timestamp() - 1
+    # add a .gpx file for a completely new hike (simulated by removing its .pts file)
+    # in this case, also use Iman's 9th March Nature Near London short .gpx file
+    mar_9th_file = "gpx\\03\\09-03-2024._gpx"
+    os.remove("routes\\299480822.pts")
+    os.rename(mar_9th_file, mar_9th_file.replace("._gpx", ".gpx"))
+    df = mb.cumulatively_find_gpx_files(
+        mb.all_known_hikes()
+    ).dropna(subset="GPX")
+    def count_points_files() -> int: return len([f for f in os.listdir("routes") if f[-4:] == ".pts"])
+    points_files_count = count_points_files()
+    mb.kill_outdated_points_files(df)
+    assert count_points_files() == points_files_count - 1
     mb.build_map()
-    changed_files = ["HikeDetails.csv", "page\\map.html"]
-    for cf in changed_files:
-        assert os.path.getmtime(cf) > start_time
-        print(f"{cf=} size={os.path.getsize(cf):,}")
-    assert os.path.getsize(changed_files[0]) > 13_000
-    assert os.path.getsize(changed_files[1]) > 1_440_000
-    assert arrow.now().timestamp() - start_time < 10
-    df = pd.read_csv(changed_files[0])
-    print(df)
-    assert (len(df.loc[df["Start"].isna()]) +
-            len(df.loc[df["End"].isna()]) == 0)
+    assert count_points_files() == points_files_count + 1
+    os.rename(original_dymchurch.replace(".gpx", "._gpx"), original_dymchurch)
+    os.remove("gpx\\04\\7104076057-Dymchurch-unsnipped.gpx")
+    os.rename(mar_9th_file.replace("._gpx", ".gpx"), mar_9th_file)
 
-
-def plot_one_hike(url: str):
-    df_one = mb.all_historic_hikes().query(f"URL == '{url}'").reset_index(drop=True)
-    df_hike_dets = mb.generate_hike_details_for_map(
-        mb.cumulatively_find_gpx_files(df_one)
-    )
-    print(df_hike_dets)
-    mb.build_map(True)
 
 def test_plot_one_hike_only():
-    plot_one_hike("272128450")
+    mb.plot_one_hike("272128450")
+
+
+def test_show_gaps():
+    print(mb.missing_hikes(2020))

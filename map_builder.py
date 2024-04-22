@@ -20,7 +20,7 @@ def build_map(from_existing_csv: bool = False):
     if from_existing_csv:
         df_hikes = pd.read_csv("HikeDetails.csv", parse_dates=[0])
     else:
-        df_hikes = generate_hike_details_for_map(
+        df_hikes = generate_hike_details_csv(
             cumulatively_find_gpx_files(
                 all_known_hikes()
             ).dropna(subset="GPX")
@@ -55,8 +55,6 @@ def build_map(from_existing_csv: bool = False):
 
 def make_line(hike_data: dict) -> folium.GeoJson:
     """create GeoJson feature for the route to be added to the map"""
-    # with open(f"routes\\{hike_data['URL']}.pts", "r") as file:
-    #     points = [eval(ln) for ln in file.read().split("\n")]
     points = [pt[::-1] for pt in points_from_file(hike_data["URL"])]
     date = arrow.get(hike_data["Date"])
     tooltip = (f"{date.format('ddd Do MMM YYYY')}<br/>"
@@ -85,12 +83,30 @@ def route_description(data: dict) -> str:
     return f"{start} to {end}"
 
 
-def generate_hike_details_for_map(df_details: pd.DataFrame) -> pd.DataFrame:
+def kill_outdated_points_files(df_details: pd.DataFrame):
+    """remove any .pts file that pre-dates its corresponding .gpx file"""
+    def file_timestamp(filename_or_url: str) -> float:
+        if filename_or_url.isnumeric():
+            filename_or_url = f"routes\\{filename_or_url}.pts"
+        try:
+            return os.path.getmtime(filename_or_url)
+        except FileNotFoundError:
+            return 0
+
+    df = df_details.loc[:, ["URL", "GPX"]]
+    df["Kill"] = df["GPX"].apply(file_timestamp) > df["URL"].apply(file_timestamp)
+    for u in df.loc[df["Kill"]]["URL"]:
+        if f"{u}.pts" in os.listdir("routes"):
+            os.remove(f"routes\\{u}.pts")
+
+
+def generate_hike_details_csv(df_details: pd.DataFrame) -> pd.DataFrame:
     """produce from scratch the DataFrame containing all necessary details
         for all plottable hikes, and saves to a new .csv file"""
+    kill_outdated_points_files(df_details)
     df_stations = build_stations_df()
     starts, ends, distances = ([] for _ in range(3))
-    hikes_to_be_plotted = 0
+    hikes_to_be_plotted = 0     # for diagnostic info only
     for i_hike in df_details.index:
         hike_info = df_details.loc[i_hike].to_dict()
         points = [geo.Location(*pt) for pt in
@@ -125,27 +141,6 @@ def fill_blanks_in_hike_details(df_in: pd.DataFrame) -> pd.DataFrame:
     df_manual = pd.read_excel("ManualStartEnd.ods", engine="odf", usecols=[2, 4, 5], converters={"URL": str})
     df_manual = pd.merge(left=df_in[["Date", "URL"]], right=df_manual, how="left", on="URL")
     return df_in.fillna(df_manual)
-
-
-def extract_hike_points(gpx_file: str, reduce_points_to: int = 500,
-                        save_to_url: str = "") -> [geo.Location]:
-    """translate a .gpx file in gpxpy recognised format into a reduced
-        list of points.  If a 'url' is specified, will save a new .pts
-        file with that name if one doesn't already exist in routes folder"""
-    gpx = gpxpy.parse(open(gpx_file, encoding="utf-8"))
-    gpx.reduce_points(max_points_no=reduce_points_to)
-    assert len(gpx.tracks) == 1
-    assert len(gpx.tracks[0].segments) == 1
-    points = gpx.tracks[0].segments[0].points
-    if save_to_url:
-        folder, filename = "routes", f"{save_to_url}.pts"
-        if filename not in os.listdir(folder):
-            with open(f"{folder}\\{filename}", "w") as file:
-                file.write("\n".join(
-                    f"({pt.longitude}, {pt.latitude})"
-                    for pt in points
-                ))
-    return points
 
 
 def gpxpy_points_from_gpx_file(filepath: str,
@@ -365,6 +360,31 @@ def correct_time_for_manually_generated_gpx(file_fragment: str, correct_date: ar
     new_text = text.replace(incorrect_date, correct_date.format("YYYY-MM-DD"))
     with open(f"{folder}\\{filename}", "w") as new_file:
         new_file.write(new_text)
+
+
+def plot_one_hike(url: str):
+    """Utility function to verify a route looks good before committing to it"""
+    print("\nPlotting a single hike:")
+    df_one = all_known_hikes().query(f"URL == '{url}'").reset_index(drop=True)
+    df_hike_dets = generate_hike_details_csv(
+        cumulatively_find_gpx_files(df_one)
+    )
+    print(df_hike_dets)
+    build_map(True)
+
+
+def missing_hikes(start_year: int = 2019) -> pd.DataFrame:
+    """Utility function to generate a table of hikes for which data is still needed"""
+    def event_page_url_stem(src: str) -> str:
+        group = "free-outdoor-trips-from-london" if src == "Free" else "metropolitan-walkers"
+        return f"https://www.meetup.com/{group}/events/"
+    df = cumulatively_find_gpx_files(
+        all_known_hikes()).sort_values(by="Date", ascending=False)
+    df = df.loc[df["GPX"].isnull() & (df["Date"].dt.year >= start_year)][["Date", "Title", "Source", "URL"]]
+    df["EventPage"] = df["Source"].apply(event_page_url_stem) + df["URL"]
+    df = df.drop(["Source", "URL"], axis=1)
+    df.to_csv("gaps.csv")
+    return df
 
 
 if __name__ == "__main__":
