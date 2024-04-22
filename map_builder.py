@@ -17,7 +17,6 @@ import argparse
 
 def build_map(from_existing_csv: bool = False):
     """run every time new hike(s) are added"""
-    df_hikes = None
     if from_existing_csv:
         df_hikes = pd.read_csv("HikeDetails.csv", parse_dates=[0])
     else:
@@ -43,9 +42,6 @@ def build_map(from_existing_csv: bool = False):
     m.add_child(folium.LayerControl(position='topright', collapsed=False, autoZIndex=True))
 
     map_title = f"(Almost) every hike Chris has organised for Free Outdoor Trips from London"
-    # title_html = f'<h3 style="position:absolute;z-index:100000;left:5vw;background-color:white;" >{map_title}</h1>'
-    # m.get_root().html.add_child(folium.Element(title_html))
-
     ave_length = aggregate_distance / walks_on_map
     map_sub_title = (f"{walks_on_map} hikes plotted, average length "
                      f"{distance_description(ave_length)}")
@@ -59,8 +55,9 @@ def build_map(from_existing_csv: bool = False):
 
 def make_line(hike_data: dict) -> folium.GeoJson:
     """create GeoJson feature for the route to be added to the map"""
-    with open(f"routes\\{hike_data['URL']}.pts", "r") as file:
-        points = [eval(ln) for ln in file.read().split("\n")]
+    # with open(f"routes\\{hike_data['URL']}.pts", "r") as file:
+    #     points = [eval(ln) for ln in file.read().split("\n")]
+    points = [pt[::-1] for pt in points_from_file(hike_data["URL"])]
     date = arrow.get(hike_data["Date"])
     tooltip = (f"{date.format('ddd Do MMM YYYY')}<br/>"
                f"{hike_data['Title']}<br/>"
@@ -93,16 +90,23 @@ def generate_hike_details_for_map(df_details: pd.DataFrame) -> pd.DataFrame:
         for all plottable hikes, and saves to a new .csv file"""
     df_stations = build_stations_df()
     starts, ends, distances = ([] for _ in range(3))
-    hikes_added = 0
+    hikes_to_be_plotted = 0
     for i_hike in df_details.index:
         hike_info = df_details.loc[i_hike].to_dict()
-        points = extract_hike_points(hike_info["GPX"], save_to_url=hike_info["URL"])
-        starts.append(find_proximate_station(points[0], df_stations))
-        ends.append(find_proximate_station(points[-1], df_stations))
+        points = [geo.Location(*pt) for pt in
+                  points_from_file(hike_info["URL"])]
+        if not points:
+            print(f"Parsing gpx data from: {hike_info['GPX']}"
+                  f"\n\tfor {hike_info['Title']}, {hike_info['Date']}"
+                  f"\n\t{hikes_to_be_plotted=}")
+            points = gpxpy_points_from_gpx_file(hike_info["GPX"])
+            points_to_file(points, hike_info["URL"])
+        s, e = (find_proximate_station(points[i_pt], df_stations)
+                for i_pt in (0, -1))
+        starts.append(s)
+        ends.append(e)
         distances.append(get_total_distance(points))
-        hikes_added += 1
-        if not (hikes_added % 10):
-            print(f"{hikes_added=}")
+        hikes_to_be_plotted += 1
     df_end_points = pd.DataFrame(
         {
             "URL": df_details["URL"],
@@ -142,6 +146,41 @@ def extract_hike_points(gpx_file: str, reduce_points_to: int = 500,
                     for pt in points
                 ))
     return points
+
+
+def gpxpy_points_from_gpx_file(filepath: str,
+                               reduce_points_to: int = 500) -> [geo.Location]:
+    """Read in a route as list of points ready to be used
+        for calculations for the map"""
+    with open(filepath, encoding="utf-8") as gpx_file:
+        gpx = gpxpy.parse(gpx_file)
+    gpx.reduce_points(max_points_no=reduce_points_to)
+    assert len(gpx.tracks) == 1
+    assert len(gpx.tracks[0].segments) == 1
+    return gpx.tracks[0].segments[0].points
+
+
+def points_from_file(url: str) -> [(float,)]:
+    """read from specified points file (url, no extension)
+        to list of tuple (lat, long), or empty list if
+        file doesn't exist"""
+    points_file = f"{url}.pts"
+    if points_file in os.listdir("routes"):
+        with open(f"routes\\{points_file}") as file:
+            return [eval(ln) for ln in file.read().split("\n")]
+    return []
+
+
+def points_to_file(points: [geo.Location], filename_stem: str):
+    """save a list of gpxpy points to file (no extension).
+        Overwrites any existing file with the same name"""
+    folder, filename = "routes", f"{filename_stem}.pts"
+    # if filename not in os.listdir(folder):
+    with open(f"{folder}\\{filename}", "w") as file:
+        file.write("\n".join(
+            f"({pt.latitude}, {pt.longitude})"
+            for pt in points
+        ))
 
 
 def get_total_distance(route: [geo.Location]) -> int:
@@ -258,7 +297,7 @@ def cumulatively_find_gpx_files(df_hikes: pd.DataFrame, sub_folders: [str] = Non
 
 
 def gpx_provided_by(provider: str) -> pd.DataFrame:
-    """Returns a dated list of gpx files found in each sub-folder under main gpx folder"""
+    """Returns a dated list of all gpx files found in each gpx sub-folder"""
     folder_address = f"gpx\\{provider}\\"
     file_data = []
     suunto_date_pattern = r"\d{4}-\d{2}-\d{2}"

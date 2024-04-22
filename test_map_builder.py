@@ -1,6 +1,10 @@
+import os
+
 import map_builder as mb
 import arrow
+import pandas as pd
 from numpy import dtype
+from gpxpy import geo
 
 
 def test_all_hikes():
@@ -60,17 +64,81 @@ def test_gap_filling():
     full_df = mb.fill_blanks_in_hike_details(df)
     print(full_df)
     data_length = len(full_df)
-    assert data_length == 12
+    assert data_length == 11
     assert len(full_df[(full_df["Start"] == "") | (full_df["End"] == "")]) == 0
 
 
 def test_correcting_timestamps():
+    # Todo: make this a test rather than an operation
     corrections = {
-        "9th March": arrow.Arrow(2024, 3, 9),
-        "Coty 2nd March": arrow.Arrow(2024, 3, 2),
-        "Rochford Circular": arrow.Arrow(2024, 4, 6),
-        "Stanford": arrow.Arrow(2024, 1, 13),
-        "Bridges": arrow.Arrow(2024, 4, 13),
+        "VGW": arrow.Arrow(2020, 7, 26),
     }
     for route, date in corrections.items():
         mb.correct_time_for_manually_generated_gpx(route, date)
+
+
+def verify_valid_points_format(points: [(float,)]) -> bool:
+    assert 300 < len(points) < 500
+    assert all(isinstance(c, float)
+               for pt in points
+               for c in pt)
+    mid_point = points[len(points) // 2]
+    lat, long = mid_point
+    assert 45 < lat < 60  # right part of the world?
+    assert -10 < long < 10
+    return True
+
+
+def test_working_with_points_files():
+    points = mb.points_from_file("299649947")
+    verify_valid_points_format(points)
+    no_points = mb.points_from_file("not_a_file")
+    assert len(no_points) == 0
+    assert isinstance(no_points, list)
+    test_file = "test_working_with_points_files"
+    mb.points_to_file([geo.Location(*pt) for pt in points], test_file)
+    test_points = mb.points_from_file(test_file)
+    verify_valid_points_format(test_points)
+    tf1 = f"{test_file}_1"
+    gpx_pts = mb.gpxpy_points_from_gpx_file("gpx\\01\\10641248499.gpx")
+    mb.points_to_file(gpx_pts, tf1)
+    tp1 = mb.points_from_file(tf1)
+    verify_valid_points_format(tp1)
+    for del_file in (test_file, tf1):
+        os.remove(f"routes\\{del_file}.pts")
+
+
+def test_add_new_hike_workflow():
+    """ 1. drop new .gpx file in appropriate folder
+        2. new file is detected (because it is not in HikeDetails.csv?  Because it succeeds map.html?)
+        3. new points file is created
+        4. new or updated HikeDetails.csv is created
+        Whole process should take less than ten seconds"""
+    # todo: next step is delete any points file whose age is greater
+    #       than that of its corresponding .gpx file?
+    os.rename("routes\\300371735.pts", "routes\\300371735._pts")
+    start_time = arrow.now().timestamp()
+    mb.build_map()
+    changed_files = ["HikeDetails.csv", "page\\map.html"]
+    for cf in changed_files:
+        assert os.path.getmtime(cf) > start_time
+        print(f"{cf=} size={os.path.getsize(cf):,}")
+    assert os.path.getsize(changed_files[0]) > 13_000
+    assert os.path.getsize(changed_files[1]) > 1_440_000
+    assert arrow.now().timestamp() - start_time < 10
+    df = pd.read_csv(changed_files[0])
+    print(df)
+    assert (len(df.loc[df["Start"].isna()]) +
+            len(df.loc[df["End"].isna()]) == 0)
+
+
+def plot_one_hike(url: str):
+    df_one = mb.all_historic_hikes().query(f"URL == '{url}'").reset_index(drop=True)
+    df_hike_dets = mb.generate_hike_details_for_map(
+        mb.cumulatively_find_gpx_files(df_one)
+    )
+    print(df_hike_dets)
+    mb.build_map(True)
+
+def test_plot_one_hike_only():
+    plot_one_hike("272128450")
