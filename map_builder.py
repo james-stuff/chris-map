@@ -361,7 +361,7 @@ def ensure_correct_date_in_gpx_file(folder_path: str, file_fragment: str, correc
     correct_date = arrow.Arrow(*correct_ymd)
     correct_time = correct_date.format('YYYY-MM-DDTHH:mm:ssZ')
     print(f"Setting date to {correct_time} for {folder_path}\\{filename}")
-    with open(f"{folder_path}\\{filename}", "r") as file:
+    with open(f"{folder_path}\\{filename}", encoding="utf-8") as file:
         text = file.read()
     incorrect_date = get_date_of_gpx_file(f"{folder_path}\\{filename}")
     if incorrect_date:
@@ -377,8 +377,50 @@ def ensure_correct_date_in_gpx_file(folder_path: str, file_fragment: str, correc
         else:
             insert_at_position = re.search("<gpx .+>", text).end()
             new_text = text[:insert_at_position] + metadata + text[insert_at_position:]
-    with open(f"{folder_path}\\{filename[:-4]}_time-corrected.gpx", "w") as new_file:
+    with open(
+            f"{folder_path}\\{filename[:-4]}_time-corrected.gpx", "w",
+            encoding="utf-8"
+    ) as new_file:
         new_file.write(new_text)
+
+
+def snip_at(file_path: str, station_name: str, discard_before: bool = True):
+    """Snip off unwanted part of a .gpx file, at either a named station
+        or (lat, long) tuple.  Discard the section either before
+        or after the snip"""
+    if isinstance(station_name, str):
+        snip_location = locate_station(station_name)
+    else:
+        print(f"Supplied co-ordinates: {station_name}")
+        snip_location = geo.Location(*station_name)
+    gpx = gpxpy.parse(open(file_path, "r", encoding="utf-8"))
+    os.rename(file_path, file_path.replace(".", "._"))
+    all_points = gpx.tracks[0].segments[0].points
+    if not discard_before:
+        all_points = all_points[::-1]
+    for i, point in enumerate(all_points):
+        if point.distance_2d(snip_location) < 100:
+            if not discard_before:
+                i = len(all_points) - 1 - i
+            print(f"Point {i} of {len(gpx.tracks[0].segments[0].points)} is close enough to {station_name} station")
+            discard_segment, new_segment = gpx.tracks[0].segments[0].split(i)
+            if not discard_before:
+                new_segment, discard_segment = discard_segment, new_segment
+            gpx.tracks[0].segments[0] = new_segment
+            xml = gpx.to_xml()
+            with open(f"{file_path[:-4]}-snipped{file_path[-4:]}", "w", encoding="utf-8") as output_file:
+                output_file.write(xml)
+            break
+    print(f"There are now {len(gpx.tracks[0].segments[0].points)} points.")
+    return snip_location
+
+
+def locate_station(station_name: str) -> geo.Location:
+    df_stations = build_stations_df()
+    station_pos = df_stations.query(
+        f"station_name.str.startswith('{station_name}')"
+    ).iloc[0, [1, 2]].to_list()
+    return geo.Location(*station_pos)
 
 
 def plot_one_hike(url: str):

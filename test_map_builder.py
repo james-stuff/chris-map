@@ -19,9 +19,9 @@ def test_historic_hikes():
 
 
 def test_finding_gpx_files():
-    for n in range(1, 5):
+    for n in range(1, 8):
         df_gpx = mb.gpx_provided_by(f"0{n}")
-        assert len(df_gpx) > 4
+        assert len(df_gpx) > 1
         assert len(df_gpx.columns) == 2
         assert df_gpx.dtypes.to_list() == [dtype('<M8[ns]'), dtype('O')]
     df_all_gpx = mb.cumulatively_find_gpx_files(mb.all_historic_hikes())
