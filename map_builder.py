@@ -299,18 +299,24 @@ def gpx_provided_by(provider: str) -> pd.DataFrame:
     for gpx_file in os.listdir(folder_address):
         if gpx_file[-4:] == ".gpx":
             if "suuntoapp-" in gpx_file:
-                time = re.search(suunto_date_pattern, gpx_file).group()
+                found_date = arrow.get(re.search(suunto_date_pattern, gpx_file).group()).date()
             else:
-                with open(f"{folder_address}{gpx_file}", "r", encoding="utf-8") as gf:
-                    gpx_text = gf.read()
-                    time = re.search("<time>.+</time>", gpx_text).group()[6:16]
+                found_date = get_date_of_gpx_file(f"{folder_address}{gpx_file}")
             file_data.append(
                 [
-                    pd.Timestamp(arrow.get(time).date()),
+                    pd.Timestamp(found_date),
                     f"{folder_address}{gpx_file}"
                 ]
             )
     return pd.DataFrame(file_data, columns=["Date", "GPX"])
+
+
+def get_date_of_gpx_file(file_path: str) -> arrow.Arrow.date:
+    with open(f"{file_path}", encoding="utf-8") as gf:
+        gpx_text = gf.read()
+        found_time = re.search("<time>.+</time>", gpx_text)
+        if found_time:
+            return arrow.get(found_time.group()[6:16]).date()
 
 
 def check_and_update_meetup_events():
@@ -347,18 +353,31 @@ def scrape_past_events_for_chris_hikes() -> pd.DataFrame:
     return pd.DataFrame(data=event_details, columns=["Date", "Title", "Attendees", "URL", "Source"])
 
 
-def correct_time_for_manually_generated_gpx(file_fragment: str, correct_date: arrow.Arrow):
-    folder = "gpx\\04"
+def ensure_correct_date_in_gpx_file(folder_path: str, file_fragment: str, correct_ymd: (int,)):
+    """produce a new version of a gpx file with correct date"""
     filename = [*filter(lambda fn: re.search(file_fragment, fn) and
                         fn[-4:] == ".gpx",
-                        os.listdir(folder))][0]
-    print(filename, correct_date)
-    with open(f"{folder}\\{filename}", "r") as file:
+                        os.listdir(folder_path))][0]
+    correct_date = arrow.Arrow(*correct_ymd)
+    correct_time = correct_date.format('YYYY-MM-DDTHH:mm:ssZ')
+    print(f"Setting date to {correct_time} for {folder_path}\\{filename}")
+    with open(f"{folder_path}\\{filename}", "r") as file:
         text = file.read()
-    os.rename(f"{folder}\\{filename}", f"{folder}\\{filename[:-4]}._gpx")
-    incorrect_date = re.search("<time>.+</time>", text).group()[6:16]
-    new_text = text.replace(incorrect_date, correct_date.format("YYYY-MM-DD"))
-    with open(f"{folder}\\{filename}", "w") as new_file:
+    incorrect_date = get_date_of_gpx_file(f"{folder_path}\\{filename}")
+    if incorrect_date:
+        new_text = text.replace(incorrect_date.format("YYYY-MM-DD"), correct_date.format("YYYY-MM-DD"))
+    else:
+        metadata = f"\n<metadata>\n\t<time>{correct_time}</time>\n</metadata>"
+        found_metadata = re.search("<metadata>.+</metadata>", text)
+        if found_metadata:
+            new_text = text.replace(
+                "<metadata>",
+                f"<metadata>\n\t<time>{correct_time}</time>\n"
+            )
+        else:
+            insert_at_position = re.search("<gpx .+>", text).end()
+            new_text = text[:insert_at_position] + metadata + text[insert_at_position:]
+    with open(f"{folder_path}\\{filename[:-4]}_time-corrected.gpx", "w") as new_file:
         new_file.write(new_text)
 
 

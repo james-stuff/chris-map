@@ -1,7 +1,6 @@
 import map_builder as mb
 import os
 import arrow
-import pandas as pd
 from numpy import dtype
 from gpxpy import geo
 import shutil
@@ -66,12 +65,20 @@ def test_gap_filling():
 
 
 def test_correcting_timestamps():
-    # Todo: make this a test rather than an operation
     corrections = {
-        "VGW": arrow.Arrow(2020, 7, 26),
+        "Gravesend_Sole_Street_Borough_Green_.gpx": (2021, 8, 14),
+        "Holland_Park_to_Trafalgar_Square.gpx": (2023, 12, 17),
     }
-    for route, date in corrections.items():
-        mb.correct_time_for_manually_generated_gpx(route, date)
+    test_folder = "gpx\\test"
+    for filename, ymd in corrections.items():
+        mb.ensure_correct_date_in_gpx_file(test_folder, filename, ymd)
+        new_fn = f"{filename[:-4]}_time-corrected.gpx"
+        assert new_fn in os.listdir(test_folder)
+        assert mb.get_date_of_gpx_file(f"{test_folder}\\{new_fn}") == arrow.Arrow(*ymd).date()
+        gpx_points = mb.gpxpy_points_from_gpx_file(f"{test_folder}\\{new_fn}")
+        assert 300 < len(gpx_points) <= 500
+    for corrected_file in [ff for ff in os.listdir(test_folder) if ff[-19:] == "_time-corrected.gpx"]:
+        os.remove(f"{test_folder}\\{corrected_file}")
 
 
 def verify_valid_points_format(points: [(float,)]) -> bool:
