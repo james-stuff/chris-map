@@ -66,8 +66,8 @@ def test_gap_filling():
 
 def test_correcting_timestamps():
     corrections = {
-        "Gravesend_Sole_Street_Borough_Green_.gpx": (2021, 8, 14),
-        "Holland_Park_to_Trafalgar_Square.gpx": (2023, 12, 17),
+        "Gravesend_Sole_Street_Borough_Green_.gpx": (2021, 8, 14),  # has no date
+        "Holland_Park_to_Trafalgar_Square.gpx": (2023, 12, 17),     # has incorrect date
     }
     test_folder = "gpx\\test"
     for filename, ymd in corrections.items():
@@ -140,7 +140,7 @@ def test_add_new_hike_workflow():
 
 
 def test_plot_one_hike_only():
-    mb.plot_one_hike("272128450")
+    mb.plot_one_hike("272249610")
 
 
 def test_show_gaps():

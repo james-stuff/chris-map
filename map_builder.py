@@ -365,7 +365,7 @@ def ensure_correct_date_in_gpx_file(folder_path: str, file_fragment: str, correc
         text = file.read()
     incorrect_date = get_date_of_gpx_file(f"{folder_path}\\{filename}")
     if incorrect_date:
-        new_text = text.replace(incorrect_date.format("YYYY-MM-DD"), correct_date.format("YYYY-MM-DD"))
+        new_text = text.replace(f"{incorrect_date}", correct_date.format("YYYY-MM-DD"))
     else:
         metadata = f"\n<metadata>\n\t<time>{correct_time}</time>\n</metadata>"
         found_metadata = re.search("<metadata>.+</metadata>", text)
