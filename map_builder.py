@@ -26,7 +26,10 @@ def build_map(from_existing_csv: bool = False):
             ).dropna(subset="GPX")
         )
 
-    m = folium.Map(location=(51.5, -0.15), tiles="cartodb positron", zoom_start=9)
+    m = folium.Map(location=(51.5, -0.15), tiles=folium.TileLayer("cartodb positron", name="Clear"), zoom_start=9)
+    folium.TileLayer('https://tile.thunderforest.com/transport/{z}/{x}/{y}.png?apikey=a23a350629204ae8b1e22f0729186cb1',
+                     attr='&copy; <a href="http://www.thunderforest.com/">Thunderforest</a>, &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+                     name="Railways").add_to(m)
     fg_by_year = {year: folium.FeatureGroup(name=f"{year}")
                   for year in pd.unique(df_hikes["Date"].dt.year)}
     walks_on_map, aggregate_distance = 0, 0
@@ -45,7 +48,7 @@ def build_map(from_existing_csv: bool = False):
     ave_length = aggregate_distance / walks_on_map
     map_sub_title = (f"{walks_on_map} hikes plotted, average length "
                      f"{distance_description(ave_length)}")
-    title_html = (f'<h4 style="position:fixed;z-index:100000;bottom:0px;left:20px;background-color:white;" >'
+    title_html = (f'<h4 style="position:fixed;z-index:100000;bottom:5px;left:20px;background-color:white;" >'
                   f'{map_title}<br>{map_sub_title}</h4>')
     m.get_root().html.add_child(folium.Element(title_html))
 
@@ -64,7 +67,7 @@ def make_line(hike_data: dict) -> folium.GeoJson:
     gj = geojson.FeatureCollection([geojson.LineString(points)])
     return folium.GeoJson(
         gj,
-        style_function=lambda feature: {"color": "green", "opacity": 0.3, "weight": 5},
+        style_function=lambda feature: {"color": "blue", "opacity": 0.3, "weight": 5},
         highlight_function=lambda feature: {"color": "red", "opacity": 1.0, "weight": 3},
         tooltip=tooltip
     )
