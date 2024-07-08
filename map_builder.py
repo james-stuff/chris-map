@@ -385,6 +385,10 @@ def ensure_correct_date_in_gpx_file(folder_path: str, file_fragment: str, correc
             encoding="utf-8"
     ) as new_file:
         new_file.write(new_text)
+    os.rename(
+        f"{folder_path}\\{filename}",
+        f"{folder_path}\\{filename[:-4]}._gpx",
+    )
 
 
 def snip_at(file_path: str, station_name: str, discard_before: bool = True):
@@ -451,6 +455,48 @@ def missing_hikes(start_year: int = 2019) -> pd.DataFrame:
     return df
 
 
+def integrated_process():
+    """Run as a single process that corrects date for latest
+        GPX file and builds map with that route assigned
+        to the latest hike without a route"""
+    # TODO: current assumed use-case is run on day after a hike
+    #       with only one new .gpx file added
+    hike_date = get_date_of_latest_hike_without_route()
+    gpx_file = get_latest_gpx_file()
+    sub_folder, filename = gpx_file.split("\\")
+    ensure_correct_date_in_gpx_file(
+        f"gpx\\{sub_folder}",
+        filename,
+        (hike_date.year, hike_date.month, hike_date.day)
+    )
+    build_map()
+
+
+def get_date_of_latest_hike_without_route() -> pd.Timestamp:
+    df_events = scrape_past_events_for_chris_hikes()
+    df_events["Date"] = df_events["Date"].apply(pd.Timestamp)
+    df_existing_hikes = pd.read_csv("HikeDetails.csv", parse_dates=[0])
+    df_temp = pd.merge(left=df_events, right=df_existing_hikes[["Date", "GPX"]], on="Date", how="left")
+    return df_temp.loc[df_temp["GPX"].isna(), "Date"].max()
+
+
+def get_latest_gpx_file() -> str:
+    """Find the most recent file added to the gpx tree.
+        Returns <gpx sub-folder name>\\<filename>"""
+    latest_gpx = ""
+    for sub_folder in os.listdir("gpx"):
+        gpx_sf = f"gpx\\{sub_folder}"
+        sf_latest = max(
+            os.listdir(gpx_sf),
+            key=lambda f: os.path.getmtime(f"{gpx_sf}\\{f}")
+        )
+        if ((not latest_gpx) or
+                os.path.getmtime(f"{gpx_sf}\\{sf_latest}") >
+                os.path.getmtime(f"gpx\\{latest_gpx}")):
+            latest_gpx = f"{sub_folder}\\{sf_latest}"
+    return latest_gpx
+
+
 if __name__ == "__main__":
     my_parser = argparse.ArgumentParser(description='Map builder')
     my_parser.add_argument('Operation',
@@ -461,6 +507,7 @@ if __name__ == "__main__":
     op = args.Operation.upper()
 
     options = {
+        "A": integrated_process,
         "B": build_map,
         "S": check_and_update_meetup_events,
     }

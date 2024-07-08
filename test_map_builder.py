@@ -79,6 +79,7 @@ def test_correcting_timestamps():
         assert 300 < len(gpx_points) <= 500
     for corrected_file in [ff for ff in os.listdir(test_folder) if ff[-19:] == "_time-corrected.gpx"]:
         os.remove(f"{test_folder}\\{corrected_file}")
+        os.rename(f"{test_folder}\\{corrected_file[:-19]}._gpx", f"{test_folder}\\{corrected_file[:-19]}.gpx")
 
 
 def verify_valid_points_format(points: [(float,)]) -> bool:
@@ -145,3 +146,24 @@ def test_plot_one_hike_only():
 
 def test_show_gaps():
     print(mb.missing_hikes(2020))
+
+
+def test_debug_build():
+    mb.build_map()
+
+
+def test_integrated_process():
+    """Build a process that handles the whole thing:
+            - scrape for new events
+            - find latest .gpx file
+            - match it to latest walk without a route
+            - change the date on it
+            - run the build process"""
+    # d = mb.get_date_of_latest_hike_without_route()
+    # print("\n", d)
+    # assert d.year == 2024
+    # assert d.month == 6
+    # assert d.day == 29
+    assert mb.get_latest_gpx_file() == '01\\8262502218-Portugal - Copy.gpx'
+    mb.integrated_process()
+
