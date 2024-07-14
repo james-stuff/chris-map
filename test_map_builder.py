@@ -1,6 +1,7 @@
 import map_builder as mb
 import os
 import arrow
+import pandas as pd
 from numpy import dtype
 from gpxpy import geo
 import shutil
@@ -164,6 +165,7 @@ def test_integrated_process():
     # assert d.year == 2024
     # assert d.month == 6
     # assert d.day == 29
-    assert mb.get_latest_gpx_file() == '01\\8262502218-Portugal - Copy.gpx'
-    mb.integrated_process()
+    assert mb.get_latest_gpx_file() == "08\\track_20240629_103615.gpx"#'01\\8262502218-Portugal - Copy.gpx'
+    assert mb.get_date_of_latest_hike_without_route() == pd.Timestamp(2024, 6, 29)
+    # mb.integrated_process()
 

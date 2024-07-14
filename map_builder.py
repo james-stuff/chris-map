@@ -461,6 +461,7 @@ def integrated_process():
         to the latest hike without a route"""
     # TODO: current assumed use-case is run on day after a hike
     #       with only one new .gpx file added
+    check_and_update_meetup_events()
     hike_date = get_date_of_latest_hike_without_route()
     gpx_file = get_latest_gpx_file()
     sub_folder, filename = gpx_file.split("\\")
@@ -473,8 +474,7 @@ def integrated_process():
 
 
 def get_date_of_latest_hike_without_route() -> pd.Timestamp:
-    df_events = scrape_past_events_for_chris_hikes()
-    df_events["Date"] = df_events["Date"].apply(pd.Timestamp)
+    df_events = hikes_from_subsequent_scrapes()
     df_existing_hikes = pd.read_csv("HikeDetails.csv", parse_dates=[0])
     df_temp = pd.merge(left=df_events, right=df_existing_hikes[["Date", "GPX"]], on="Date", how="left")
     return df_temp.loc[df_temp["GPX"].isna(), "Date"].max()
