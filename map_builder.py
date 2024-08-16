@@ -118,7 +118,7 @@ def generate_hike_details_csv(df_details: pd.DataFrame) -> pd.DataFrame:
             print(f"Parsing gpx data from: {hike_info['GPX']}"
                   f"\n\tfor {hike_info['Title']}, {hike_info['Date']}"
                   f"\n\t{hikes_to_be_plotted=}")
-            points = gpxpy_points_from_gpx_file(hike_info["GPX"])
+            points = gpxpy_points_from_gpx_file(hike_info["GPX"], 1_000_000)
             points_to_file(points, hike_info["URL"])
         s, e = (find_proximate_station(points[i_pt], df_stations)
                 for i_pt in (0, -1))
@@ -152,7 +152,10 @@ def gpxpy_points_from_gpx_file(filepath: str,
         for calculations for the map"""
     with open(filepath, encoding="utf-8") as gpx_file:
         gpx = gpxpy.parse(gpx_file)
-    gpx.reduce_points(max_points_no=reduce_points_to)
+    no_of_points = len(gpx.tracks[0].segments[0].points)
+    if no_of_points > 8_000:
+        no_of_points = no_of_points // 10
+    gpx.reduce_points(max_points_no=no_of_points)
     assert len(gpx.tracks) == 1
     assert len(gpx.tracks[0].segments) == 1
     return gpx.tracks[0].segments[0].points
