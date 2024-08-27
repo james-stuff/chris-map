@@ -5,6 +5,8 @@ import pandas as pd
 from numpy import dtype
 from gpxpy import geo
 import shutil
+import gpxpy
+import re
 
 
 def test_historic_hikes():
@@ -169,3 +171,29 @@ def test_integrated_process():
     assert mb.get_date_of_latest_hike_without_route() == pd.Timestamp(2024, 6, 29)
     # mb.integrated_process()
 
+
+def test_split_file_at_gaps():
+    file_path = f"gpx\\{mb.get_latest_gpx_file()}"
+    with open(file_path, encoding="utf-8") as gpx_file:
+        gpx = gpxpy.parse(gpx_file)
+    points = gpx.tracks[0].segments[0].points
+    for i, p in enumerate(points):
+        if i < len(points) - 1:
+            dist = geo.distance(
+                latitude_1=p.latitude,
+                longitude_1=p.longitude,
+                elevation_1=None,
+                latitude_2=points[i + 1].latitude,
+                longitude_2=points[i + 1].longitude,
+                elevation_2=None
+            )
+            if dist > 100:
+                print(f"There is a 100-metre-plus gap after {p}")
+                print(f"The next point is {points[i + 1]}")
+                query = f"<trkpt lat=\"{points[i + 1].latitude}0\" lon=\"{points[i + 1].longitude}0\""
+                print(f"{query=}")
+                with open(file_path, encoding="utf-8") as gpx_file:
+                    file_text = gpx_file.read()
+                match = re.search(query, file_text)
+                if match:
+                    assert match.start() == 1092970
