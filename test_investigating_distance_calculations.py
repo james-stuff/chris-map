@@ -7,8 +7,11 @@ import folium
 import geojson
 
 
-def build_map(route_data: [[]]):
-    m = folium.Map(location=(51.5, -0.15), tiles=folium.TileLayer("cartodb positron", name="Clear"), zoom_start=9)
+def build_map(route_data: [[]], map_centre: (float,) = (51.5, -0.15)):
+    zoom_level = 9
+    if map_centre != (51.5, -0.15):
+        zoom_level = 15
+    m = folium.Map(location=map_centre, tiles=folium.TileLayer("cartodb positron", name="Clear"), zoom_start=zoom_level)
     for hike in route_data:
         for line in hike:
             line.add_to(m)
@@ -23,15 +26,9 @@ def build_map(route_data: [[]]):
 
 
 def make_all_lines(hike_data: dict) -> [folium.GeoJson]:
-    with open(hike_data["GPX"], encoding="utf-8") as gpx_file:
-        gpx = gpxpy.parse(gpx_file)
-        gpx_points = len(gpx.tracks[0].segments[0].points)
-    resolutions = [500, gpx_points // 10, 1_000_000]
+    no_of_points = count_points_in_gpx_file(hike_data["GPX"])
+    resolutions = [500, no_of_points // 10, 1_000_000]
     colours = ["blue", "cyan", "green",]
-    date = arrow.get(hike_data["Date"])
-    base_tooltip = (f"{date.format('ddd Do MMM YYYY')}<br/>"
-                    f"{hike_data['Title']}<br/>"
-                    f"{mb.route_description(hike_data)}<br/>")
     lines = []
     for r, c in zip(resolutions, colours):
         print(f"Drawing route for {hike_data['Title']} with {r} points . . .")
@@ -39,11 +36,17 @@ def make_all_lines(hike_data: dict) -> [folium.GeoJson]:
             geo.Location(pt.latitude, pt.longitude) for pt in
             mb.gpxpy_points_from_gpx_file(hike_data["GPX"], r)
             ]
-        # Todo: currently second argument to mb.gpxpy_points_from_gpx_file() is ignored
-        tooltip = base_tooltip + (f"{mb.distance_description(mb.get_total_distance(points))}"
-                                  f"<br>{r} points plotted<br>GPX file has {gpx_points} points")
+        tooltip = base_tooltip(hike_data) + (f"{mb.distance_description(mb.get_total_distance(points))}"
+                                             f"<br>{r} points plotted<br>GPX file has {no_of_points} points")
         lines.append(make_line(points, tooltip, c))
     return lines
+
+
+def base_tooltip(hike_data: dict) -> str:
+    date = arrow.get(hike_data["Date"])
+    return (f"{date.format('ddd Do MMM YYYY')}<br/>"
+                    f"{hike_data['Title']}<br/>"
+                    f"{mb.route_description(hike_data)}<br/>")
 
 
 def make_line(points: [geo.Location], tooltip: str, colour: str) -> folium.GeoJson:
@@ -88,6 +91,19 @@ Settled on 8,000 as the number of points above which
 """
 
 
+def quick_plot(filename: str):
+    """Plot a single route on a map"""
+    with open(filename, encoding="utf-8") as gpx_file:
+        gpx = gpxpy.parse(gpx_file)
+        gpx_points = gpx.tracks[0].segments[0].points
+    mid_point = gpx_points[len(gpx_points) // 2]
+
+    build_map(
+        [[make_line(gpx_points, "Woking", "green")]],
+        (mid_point.latitude, mid_point.longitude)
+    )
+
+
 def test_run():
     """Take several hikes, and for each one plot versions of it
             with differing numbers of sample points"""
@@ -107,3 +123,8 @@ def test_run():
         for h in hikes
     ]
     build_map(hike_data)
+
+
+def test_quick():
+    quick_plot("gpx\\07\\Woking_to_West_Byfleet.gpx")
+

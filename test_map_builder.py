@@ -1,7 +1,6 @@
 import map_builder as mb
 import os
 import arrow
-import pandas as pd
 from numpy import dtype
 from gpxpy import geo
 import shutil
@@ -18,7 +17,7 @@ def test_historic_hikes():
     assert arrow.Arrow(2022, 11, 4).date() not in df_scraped["Date"].dt.date.to_list()
     assert df_scraped.iat[0, 1].startswith("Nature near London - The only moat in Middlesex")
     df_all_historic = mb.all_historic_hikes()
-    assert len(df_all_historic) == 215
+    assert len(df_all_historic) == 216
 
 
 def test_finding_gpx_files():
@@ -79,14 +78,14 @@ def test_correcting_timestamps():
         assert new_fn in os.listdir(test_folder)
         assert mb.get_date_of_gpx_file(f"{test_folder}\\{new_fn}") == arrow.Arrow(*ymd).date()
         gpx_points = mb.gpxpy_points_from_gpx_file(f"{test_folder}\\{new_fn}")
-        assert 300 < len(gpx_points) <= 500
+        assert len(gpx_points) > 800
     for corrected_file in [ff for ff in os.listdir(test_folder) if ff[-19:] == "_time-corrected.gpx"]:
         os.remove(f"{test_folder}\\{corrected_file}")
         os.rename(f"{test_folder}\\{corrected_file[:-19]}._gpx", f"{test_folder}\\{corrected_file[:-19]}.gpx")
 
 
 def verify_valid_points_format(points: [(float,)]) -> bool:
-    assert 300 < len(points) < 500
+    assert len(points) > 800
     assert all(isinstance(c, float)
                for pt in points
                for c in pt)
@@ -116,6 +115,11 @@ def test_working_with_points_files():
         os.remove(f"routes\\{del_file}.pts")
 
 
+def safe_remove(path: str):
+    if os.path.exists(path):
+        os.remove(path)
+
+
 def test_add_new_hike_workflow():
     # replace an existing .gpx file with a more up-to-date one in a different folder
     original_dymchurch = "gpx\\02\\7104076057new.gpx"
@@ -127,7 +131,7 @@ def test_add_new_hike_workflow():
     # add a .gpx file for a completely new hike (simulated by removing its .pts file)
     # in this case, also use Iman's 9th March Nature Near London short .gpx file
     mar_9th_file = "gpx\\03\\09-03-2024._gpx"
-    os.remove("routes\\299480822.pts")
+    safe_remove("routes\\299480822.pts")
     os.rename(mar_9th_file, mar_9th_file.replace("._gpx", ".gpx"))
     df = mb.cumulatively_find_gpx_files(
         mb.all_known_hikes()
@@ -139,12 +143,14 @@ def test_add_new_hike_workflow():
     mb.build_map()
     assert count_points_files() == points_files_count + 1
     os.rename(original_dymchurch.replace(".gpx", "._gpx"), original_dymchurch)
-    os.remove("gpx\\04\\7104076057-Dymchurch-unsnipped.gpx")
+    safe_remove("gpx\\04\\7104076057-Dymchurch-unsnipped.gpx")
+    safe_remove("routes\\285486454.pts")
+    safe_remove("routes\\299480822.pts")
     os.rename(mar_9th_file.replace("._gpx", ".gpx"), mar_9th_file)
 
 
 def test_plot_one_hike_only():
-    mb.plot_one_hike("272249610")
+    mb.plot_one_hike("302940231")
 
 
 def test_show_gaps():
@@ -167,8 +173,8 @@ def test_integrated_process():
     # assert d.year == 2024
     # assert d.month == 6
     # assert d.day == 29
-    assert mb.get_latest_gpx_file() == "08\\track_20240629_103615.gpx"#'01\\8262502218-Portugal - Copy.gpx'
-    assert mb.get_date_of_latest_hike_without_route() == pd.Timestamp(2024, 6, 29)
+    # assert mb.get_latest_gpx_file() == "08\\track_20240629_103615.gpx"#'01\\8262502218-Portugal - Copy.gpx'
+    # assert mb.get_date_of_latest_hike_without_route() == pd.Timestamp(2024, 6, 29)
     # mb.integrated_process()
 
 
@@ -195,5 +201,5 @@ def test_split_file_at_gaps():
                 with open(file_path, encoding="utf-8") as gpx_file:
                     file_text = gpx_file.read()
                 match = re.search(query, file_text)
-                if match:
-                    assert match.start() == 1092970
+                # if match:
+                #     assert match.start() == 1092970

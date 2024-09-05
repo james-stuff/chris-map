@@ -118,7 +118,7 @@ def generate_hike_details_csv(df_details: pd.DataFrame) -> pd.DataFrame:
             print(f"Parsing gpx data from: {hike_info['GPX']}"
                   f"\n\tfor {hike_info['Title']}, {hike_info['Date']}"
                   f"\n\t{hikes_to_be_plotted=}")
-            points = gpxpy_points_from_gpx_file(hike_info["GPX"], 1_000_000)
+            points = gpxpy_points_from_gpx_file(hike_info["GPX"])
             points_to_file(points, hike_info["URL"])
         s, e = (find_proximate_station(points[i_pt], df_stations)
                 for i_pt in (0, -1))
@@ -498,6 +498,40 @@ def get_latest_gpx_file() -> str:
                 os.path.getmtime(f"gpx\\{latest_gpx}")):
             latest_gpx = f"{sub_folder}\\{sf_latest}"
     return latest_gpx
+
+
+def df_from_gpx(path: str) -> pd.DataFrame:
+    """Make a DataFrame containing all gpx points in the file"""
+    with open(path, encoding="utf-8") as gpx_file:
+        gpx = gpxpy.parse(gpx_file)
+    points = gpx.tracks[0].segments[0].points
+    data = {
+        prop: [eval(f"pt.{prop}") for pt in points]
+        for prop in ("latitude", "longitude", "elevation", "time")
+    }
+    return pd.DataFrame(data)
+
+
+def df_with_diffs_from_gpx(path: str) -> pd.DataFrame:
+    df = df_from_gpx(path)
+    df["time_diff"] = df["time"].diff()
+    dist_data = df[["latitude", "longitude", "elevation"]].values
+    df["dist"] = [0 if i == 0 else geo.distance(*pt, *dist_data[i - 1]) for i, pt in enumerate(dist_data)]
+    df["pace"] = df["dist"] / df["time_diff"].dt.seconds
+    # ns_diff = df["latitude"].diff().apply(lambda d: d * 10_000_000 / 90)
+    # ew_diff = df["longitude"].diff()
+    # bearing = []
+    # for i, dd in enumerate(df["dist"]):
+    #     b = 0
+    #     if dd != 0 and i != 0:
+    #         angle = math.degrees(math.acos(ns_diff[i] / dd))
+    #         if ew_diff[i] > 0:
+    #             b = angle
+    #         else:
+    #             b = 360 - angle
+    #     bearing.append(b)
+    # df["bearing"] = bearing
+    return df
 
 
 if __name__ == "__main__":
