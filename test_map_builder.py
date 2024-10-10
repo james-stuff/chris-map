@@ -179,7 +179,7 @@ def test_integrated_process():
 
 
 def test_split_file_at_gaps():
-    file_path = f"gpx\\{mb.get_latest_gpx_file()}"
+    file_path = f"gpx\\07\\Woking_to_West_Byfleet.gpx"#{mb.get_latest_gpx_file()}"
     with open(file_path, encoding="utf-8") as gpx_file:
         gpx = gpxpy.parse(gpx_file)
     points = gpx.tracks[0].segments[0].points
