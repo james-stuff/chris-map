@@ -356,8 +356,6 @@ def scrape_past_events_for_chris_hikes() -> pd.DataFrame:
     url = "https://www.meetup.com/free-outdoor-trips-from-london/events/?type=past"
     response = requests.get(url)
     html = response.text
-    with open("meetup_past_events_20_oct.html", "w", encoding='utf-8') as html_file:
-        html_file.write(html)
     event_details = []
     soup = bs(html, "html5lib")
     past_events = soup.find("div", "flex min-h-[28px] flex-col space-y-4 xs:w-full md:w-3/4")
