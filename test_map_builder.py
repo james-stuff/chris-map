@@ -203,3 +203,20 @@ def test_split_file_at_gaps():
                 match = re.search(query, file_text)
                 # if match:
                 #     assert match.start() == 1092970
+
+
+def test_find_windsor_and_eton_riverside():
+    # timeit results, 22nd Oct 2024:
+    # Original: 100 loops, best of 5: 2.97 msec per loop
+    # improved: 50 loops, best of 5: 4.38 msec per loop
+    stations = mb.build_stations_df()
+    assert mb.find_proximate_station(
+        mb.geo.Location(51.485628, -0.606757),
+        stations
+    ) == "Windsor & Eton Riverside"
+    # make sure it's not too slow when there are lots of stations nearby:
+    central_london = mb.geo.Location(51.515276, -0.109188)
+    print(mb.find_proximate_station(central_london, stations))
+    # warn when not close to a station
+    chesterford = geo.Location(52.066359, 0.208629)
+    mb.find_proximate_station(chesterford, stations)

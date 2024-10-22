@@ -197,16 +197,30 @@ def get_total_distance(route: [geo.Location]) -> int:
 
 def find_proximate_station(location: geo.Location,
                            df_station_locations: pd.DataFrame, tolerance_metres: int = 500) -> str:
-    tolerance_degrees = tolerance_metres * 9e-6
+    tolerance_degrees = 0.05
     func_locals = locals()
     query_string = " & ".join(
         f"({co_ord} {'<' if bound == 'max' else '>'} {eval(f'location.{co_ord}', globals(), func_locals)} "
         f"{'+' if bound == 'max' else '-'} {tolerance_degrees})"
         for bound, co_ord in [*product(("max", "min"), ("latitude", "longitude"))]
     )
-    stations_subset = df_station_locations.query(query_string)
-    if len(stations_subset) > 0:
-        return stations_subset.iat[0, 0]
+    stn_subset = df_station_locations.query(query_string).reset_index(drop=True)
+    if len(stn_subset) > 0:
+        ll_pairs = [
+            (p1, p2) for p1, p2 in
+            zip(*[stn_subset[f].to_list()
+                  for f in ('latitude', 'longitude')])]
+        s_distances = pd.Series(
+            [geo.distance(
+                *p, 0, location.latitude,
+                location.longitude, 0
+            ) for p in ll_pairs], name='distance'
+        )
+        if s_distances.min() > tolerance_metres:
+            print(f"\tWARNING: found a station that is more than "
+                  f"{tolerance_metres}m away from start/end of hike")
+        return pd.merge(left=stn_subset, right=s_distances, right_index=True, left_index=True).sort_values(
+            by='distance')['station_name'].iat[0]
     return nan
 
 
@@ -225,7 +239,7 @@ def build_stations_df() -> pd.DataFrame:
         names=["station_name", "longitude", "latitude"],
         skiprows=[0]
     )
-    return pd.concat([df_stations, df_tube])
+    return pd.concat([df_stations, df_tube], ignore_index=True)
 
 
 def all_known_hikes() -> pd.DataFrame:
@@ -342,6 +356,8 @@ def scrape_past_events_for_chris_hikes() -> pd.DataFrame:
     url = "https://www.meetup.com/free-outdoor-trips-from-london/events/?type=past"
     response = requests.get(url)
     html = response.text
+    with open("meetup_past_events_20_oct.html", "w", encoding='utf-8') as html_file:
+        html_file.write(html)
     event_details = []
     soup = bs(html, "html5lib")
     past_events = soup.find("div", "flex min-h-[28px] flex-col space-y-4 xs:w-full md:w-3/4")
