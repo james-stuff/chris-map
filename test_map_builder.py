@@ -220,3 +220,18 @@ def test_find_windsor_and_eton_riverside():
     # warn when not close to a station
     chesterford = geo.Location(52.066359, 0.208629)
     mb.find_proximate_station(chesterford, stations)
+
+
+def test_migrate_web_scraping_to_json():
+    """TDD for adjusting to meetup format change"""
+    # df_past = mb.scrape_past_events_for_chris_hikes()
+    # print(df_past)
+    # df_past.info()
+    mb.check_and_update_meetup_events()
+    scraped_file = "ScrapedHikes.csv"
+    with open(scraped_file) as sf:
+        text = sf.read()
+    assert len([*filter(
+        lambda h: h.count(",") >= 4, text.split("\n"))]) == 32
+    assert re.search("2024-10-26", text)
+    assert re.search("maple canter", text)

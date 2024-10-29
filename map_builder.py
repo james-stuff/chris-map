@@ -13,6 +13,7 @@ from gpxpy import geo
 import folium
 import geojson
 import argparse
+import json
 
 
 def build_map(from_existing_csv: bool = False):
@@ -357,19 +358,26 @@ def scrape_past_events_for_chris_hikes() -> pd.DataFrame:
     response = requests.get(url)
     html = response.text
     event_details = []
-    soup = bs(html, "html5lib")
-    past_events = soup.find("div", "flex min-h-[28px] flex-col space-y-4 xs:w-full md:w-3/4")
-    for event in past_events.find_all(id=re.compile("^ep-")):
-        image = event.find("img")
-        if image["alt"] == "Photo of Christopher":
-            raw_date, title = [*event.strings][:2]
-            date_string = arrow.get(
-                re.search(r"\D{3} \d+, \d{4}", raw_date).group(),
-                "MMM D, YYYY").format("YYYY-MM-DD")
-            attendees = [*event.strings][3]
-            attendees = int(attendees[:attendees.index(" ")])
-            url = re.search(r"\d{9}", event.find("a")["href"]).group()
-            event_details.append((date_string, title, attendees, url, "Free"))
+    soup = bs(html, "lxml")
+    json_tag = soup.find("script", {"type": "application/json"})
+    js = json.loads(json_tag.text)
+    event_keys = [
+        *filter(lambda k: k.startswith("Event"),
+                js['props']['pageProps']['__APOLLO_STATE__'].keys()
+                )
+    ]
+    for ek in event_keys:
+        ev = js['props']['pageProps']['__APOLLO_STATE__'][ek]
+        if ev['eventHosts'][0]['memberId'] == "14080424":
+            event_details.append(
+                (
+                    ev['dateTime'][:10],
+                    ev['title'],
+                    ev['going']['totalCount'],
+                    ev['id'],
+                    "Free",
+                )
+            )
     return pd.DataFrame(data=event_details, columns=["Date", "Title", "Attendees", "URL", "Source"])
 
 
@@ -380,13 +388,18 @@ def ensure_correct_date_in_gpx_file(folder_path: str, file_fragment: str, correc
                         os.listdir(folder_path))][0]
     correct_date = arrow.Arrow(*correct_ymd)
     correct_time = correct_date.format('YYYY-MM-DDTHH:mm:ssZ')
-    print(f"Setting date to {correct_time} for {folder_path}\\{filename}")
+    message = f"Setting date to {correct_time} for {folder_path}\\{filename}"
     with open(f"{folder_path}\\{filename}", encoding="utf-8") as file:
         text = file.read()
-    incorrect_date = get_date_of_gpx_file(f"{folder_path}\\{filename}")
-    if incorrect_date:
-        new_text = text.replace(f"{incorrect_date}", correct_date.format("YYYY-MM-DD"))
+    existing_date = get_date_of_gpx_file(f"{folder_path}\\{filename}")
+    if existing_date:
+        if existing_date != correct_date:
+            print(message)
+            new_text = text.replace(f"{existing_date}", correct_date.format("YYYY-MM-DD"))
+        else:
+            return
     else:
+        print(message, "(Date was not present)")
         metadata = f"\n<metadata>\n\t<time>{correct_time}</time>\n</metadata>"
         found_metadata = re.search("<metadata>.+</metadata>", text)
         if found_metadata:
