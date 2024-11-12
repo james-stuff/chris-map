@@ -66,7 +66,7 @@ def test_gap_filling():
     assert len(full_df[(full_df["Start"] == "") | (full_df["End"] == "")]) == 0
 
 
-def test_correcting_timestamps():
+def test_correcting_dates():
     corrections = {
         "Gravesend_Sole_Street_Borough_Green_.gpx": (2021, 8, 14),  # has no date
         "Holland_Park_to_Trafalgar_Square.gpx": (2023, 12, 17),     # has incorrect date

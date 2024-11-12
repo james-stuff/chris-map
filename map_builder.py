@@ -198,7 +198,7 @@ def get_total_distance(route: [geo.Location]) -> int:
 
 def find_proximate_station(location: geo.Location,
                            df_station_locations: pd.DataFrame, tolerance_metres: int = 500) -> str:
-    tolerance_degrees = 0.05
+    tolerance_degrees = 0.05    # equates to <= 5km either side
     func_locals = locals()
     query_string = " & ".join(
         f"({co_ord} {'<' if bound == 'max' else '>'} {eval(f'location.{co_ord}', globals(), func_locals)} "
@@ -217,11 +217,10 @@ def find_proximate_station(location: geo.Location,
                 location.longitude, 0
             ) for p in ll_pairs], name='distance'
         )
-        if s_distances.min() > tolerance_metres:
-            print(f"\tWARNING: found a station that is more than "
-                  f"{tolerance_metres}m away from start/end of hike")
-        return pd.merge(left=stn_subset, right=s_distances, right_index=True, left_index=True).sort_values(
-            by='distance')['station_name'].iat[0]
+        return pd.merge(
+            left=stn_subset, right=s_distances,
+            right_index=True, left_index=True
+        ).sort_values(by='distance')['station_name'].iat[0]
     return nan
 
 
@@ -361,13 +360,14 @@ def scrape_past_events_for_chris_hikes() -> pd.DataFrame:
     soup = bs(html, "lxml")
     json_tag = soup.find("script", {"type": "application/json"})
     js = json.loads(json_tag.text)
+    apollo = js['props']['pageProps']['__APOLLO_STATE__']
     event_keys = [
         *filter(lambda k: k.startswith("Event"),
-                js['props']['pageProps']['__APOLLO_STATE__'].keys()
+                apollo.keys()
                 )
     ]
     for ek in event_keys:
-        ev = js['props']['pageProps']['__APOLLO_STATE__'][ek]
+        ev = apollo[ek]
         if ev['eventHosts'][0]['memberId'] == "14080424":
             event_details.append(
                 (
@@ -386,26 +386,25 @@ def ensure_correct_date_in_gpx_file(folder_path: str, file_fragment: str, correc
     filename = [*filter(lambda fn: re.search(file_fragment, fn) and
                         fn[-4:] == ".gpx",
                         os.listdir(folder_path))][0]
-    correct_date = arrow.Arrow(*correct_ymd)
-    correct_time = correct_date.format('YYYY-MM-DDTHH:mm:ssZ')
-    message = f"Setting date to {correct_time} for {folder_path}\\{filename}"
+    correct_date = arrow.Arrow(*correct_ymd).date()
+    message = f"Setting date to {correct_date} for {folder_path}\\{filename}"
     with open(f"{folder_path}\\{filename}", encoding="utf-8") as file:
         text = file.read()
     existing_date = get_date_of_gpx_file(f"{folder_path}\\{filename}")
     if existing_date:
         if existing_date != correct_date:
             print(message)
-            new_text = text.replace(f"{existing_date}", correct_date.format("YYYY-MM-DD"))
+            new_text = text.replace(f"{existing_date}", f"{correct_date}")#correct_date.format("YYYY-MM-DD"))
         else:
             return
     else:
         print(message, "(Date was not present)")
-        metadata = f"\n<metadata>\n\t<time>{correct_time}</time>\n</metadata>"
+        metadata = f"\n<metadata>\n\t<time>{correct_date}</time>\n</metadata>"
         found_metadata = re.search("<metadata>.+</metadata>", text)
         if found_metadata:
             new_text = text.replace(
                 "<metadata>",
-                f"<metadata>\n\t<time>{correct_time}</time>\n"
+                f"<metadata>\n\t<time>{correct_date}</time>\n"
             )
         else:
             insert_at_position = re.search("<gpx .+>", text).end()
