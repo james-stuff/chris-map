@@ -394,7 +394,7 @@ def ensure_correct_date_in_gpx_file(folder_path: str, file_fragment: str, correc
     if existing_date:
         if existing_date != correct_date:
             print(message)
-            new_text = text.replace(f"{existing_date}", f"{correct_date}")#correct_date.format("YYYY-MM-DD"))
+            new_text = text.replace(f"{existing_date}", f"{correct_date}")
         else:
             return
     else:
@@ -485,11 +485,21 @@ def missing_hikes(start_year: int = 2019) -> pd.DataFrame:
 
 
 def integrated_process():
-    """Run as a single process that corrects date for latest
+    """Run as a single process that corrects date for the latest
         GPX file and builds map with that route assigned
-        to the latest hike without a route"""
-    # TODO: current assumed use-case is run on day after a hike
-    #       with only one new .gpx file added
+        to the latest hike without a route.  Automatically
+        move .gpx file dated today from Downloads to gpx\\07 folder"""
+    dl = "C:\\Users\\j_a_c\\Downloads"
+    downloaded_gpx = [
+        *filter(lambda fn:
+                arrow.get(os.path.getctime(f"{dl}\\{fn}")).date() == arrow.utcnow().date(),
+                os.listdir(dl))
+    ]
+    if downloaded_gpx:
+        file = downloaded_gpx[0]
+        os.rename(f"{dl}\\{file}", f"gpx\\07\\{file}")
+    else:
+        print("No new .gpx downloads found")
     check_and_update_meetup_events()
     hike_date = get_date_of_latest_hike_without_route()
     gpx_file = get_latest_gpx_file()
@@ -560,6 +570,37 @@ def df_with_diffs_from_gpx(path: str) -> pd.DataFrame:
     return df
 
 
+def detailed_route_plot(gpx_file: str = ""):
+    """For troubleshooting purposes.  Plot a route from raw
+        gpx file, showing markers for minute-by-minute position"""
+    if not gpx_file:
+        gpx_file = get_latest_gpx_file()
+    df = df_from_gpx(f"gpx\\{gpx_file}")
+    centre = tuple((df[field].mean() for field in ("latitude", "longitude")))
+    m = folium.Map(location=centre, tiles=folium.TileLayer("cartodb positron", name="Detailed"), zoom_start=14)
+    points = [*zip(df["longitude"], df["latitude"])]
+    gj = geojson.FeatureCollection([geojson.LineString(points)])
+    line = folium.GeoJson(
+        gj,
+        style_function=lambda ft: {"color": "blue", "opacity": 0.3, "weight": 5},
+    )
+    line.add_to(m)
+    df_minutes = df.loc[df["time"].dt.second == 0]
+    mps = [*zip(df_minutes["longitude"], df_minutes["latitude"])]
+    mp_times = df_minutes["time"].dt.strftime("%H:%M").to_list()
+    features = []
+    for loc, time in zip(mps, mp_times):
+        feature = geojson.Feature(geometry=geojson.Point(loc), properties={"time": time})
+        features.append(feature)
+    minute_markers = geojson.FeatureCollection(features)
+    folium.GeoJson(
+        minute_markers,
+        marker=folium.Circle(radius=10, fill_color="orange", fill_opacity=0.4, color="black", weight=1),
+        tooltip=folium.GeoJsonTooltip(fields=["time"]),
+    ).add_to(m)
+    m.save("page\\detailed.html")
+
+
 if __name__ == "__main__":
     my_parser = argparse.ArgumentParser(description='Map builder')
     my_parser.add_argument('Operation',
@@ -573,6 +614,7 @@ if __name__ == "__main__":
         "A": integrated_process,
         "B": build_map,
         "S": check_and_update_meetup_events,
+        "D": detailed_route_plot,
     }
     if op in options:
         options[op]()
