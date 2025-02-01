@@ -484,7 +484,7 @@ def missing_hikes(start_year: int = 2019) -> pd.DataFrame:
     return df
 
 
-def integrated_process():
+def integrated_process(sub_folder: int = 7):
     """Run as a single process that corrects date for the latest
         GPX file and builds map with that route assigned
         to the latest hike without a route.  Automatically
@@ -497,19 +497,19 @@ def integrated_process():
     ]
     if downloaded_gpx:
         file = downloaded_gpx[0]
-        os.rename(f"{dl}\\{file}", f"gpx\\07\\{file}")
+        os.rename(f"{dl}\\{file}", f"gpx\\{sub_folder:02d}\\{file}")
+        check_and_update_meetup_events()
+        hike_date = get_date_of_latest_hike_without_route()
+        gpx_file = get_latest_gpx_file()
+        sub_folder, filename = gpx_file.split("\\")
+        ensure_correct_date_in_gpx_file(
+            f"gpx\\{sub_folder}",
+            filename,
+            (hike_date.year, hike_date.month, hike_date.day)
+        )
+        build_map()
     else:
         print("No new .gpx downloads found")
-    check_and_update_meetup_events()
-    hike_date = get_date_of_latest_hike_without_route()
-    gpx_file = get_latest_gpx_file()
-    sub_folder, filename = gpx_file.split("\\")
-    ensure_correct_date_in_gpx_file(
-        f"gpx\\{sub_folder}",
-        filename,
-        (hike_date.year, hike_date.month, hike_date.day)
-    )
-    build_map()
 
 
 def get_date_of_latest_hike_without_route() -> pd.Timestamp:
@@ -606,7 +606,11 @@ if __name__ == "__main__":
     my_parser.add_argument('Operation',
                            metavar='operation',
                            type=str,
-                           help='either [B] build map or [S] scrape meetup for new events')
+                           help='[B] build map\n'
+                                '[S] scrape meetup for new events\n'
+                                '[A] add the latest hike\n'
+                                '[D] plot a detailed route')
+    my_parser.add_argument("-s", "--subfolder", type=int)
     args = my_parser.parse_args()
     op = args.Operation.upper()
 
@@ -617,6 +621,9 @@ if __name__ == "__main__":
         "D": detailed_route_plot,
     }
     if op in options:
-        options[op]()
+        if op == "A" and args.subfolder:
+            integrated_process(args.subfolder)
+        else:
+            options[op]()
     else:
         print(f"{op} is not a valid operation code")
