@@ -492,11 +492,15 @@ def integrated_process(sub_folder: int = 7):
     dl = "C:\\Users\\j_a_c\\Downloads"
     downloaded_gpx = [
         *filter(lambda fn:
-                arrow.get(os.path.getctime(f"{dl}\\{fn}")).date() == arrow.utcnow().date(),
+                fn[-4:] == ".gpx",
                 os.listdir(dl))
     ]
     if downloaded_gpx:
-        file = downloaded_gpx[0]
+        file = sorted(
+            downloaded_gpx,
+            key=lambda fn: os.path.getmtime(f"{dl}\\{fn}"),
+            reverse=True
+        )[0]
         os.rename(f"{dl}\\{file}", f"gpx\\{sub_folder:02d}\\{file}")
         check_and_update_meetup_events()
         hike_date = get_date_of_latest_hike_without_route()
