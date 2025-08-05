@@ -68,7 +68,7 @@ def make_line(hike_data: dict) -> folium.GeoJson:
     gj = geojson.FeatureCollection([geojson.LineString(points)])
     return folium.GeoJson(
         gj,
-        style_function=lambda feature: {"color": "blue", "opacity": 0.3, "weight": 5},
+        style_function=lambda feature: {"color": "blue", "opacity": 0.3, "weight": 8},
         highlight_function=lambda feature: {"color": "red", "opacity": 1.0, "weight": 3},
         tooltip=tooltip
     )
@@ -489,6 +489,13 @@ def integrated_process(sub_folder: int = 7):
         GPX file and builds map with that route assigned
         to the latest hike without a route.  Automatically
         move .gpx file dated today from Downloads to gpx\\07 folder"""
+    # TODO: make the process more resilient by tackling:
+    #       - filename conflicts
+    #       - process is generally confusing
+    #       - hard to roll back and start again
+    #       - what other issues have occurred?
+    #   What to do about Boulogne weekend?
+    #   Support multi-part hikes/events
     dl = "C:\\Users\\j_a_c\\Downloads"
     downloaded_gpx = [
         *filter(lambda fn:
@@ -594,13 +601,19 @@ def detailed_route_plot(gpx_file: str = ""):
     mp_times = df_minutes["time"].dt.strftime("%H:%M").to_list()
     features = []
     for loc, time in zip(mps, mp_times):
-        feature = geojson.Feature(geometry=geojson.Point(loc), properties={"time": time})
+        feature = geojson.Feature(
+            geometry=geojson.Point(loc),
+            properties={"time": time, "loc": loc}
+        )
         features.append(feature)
     minute_markers = geojson.FeatureCollection(features)
     folium.GeoJson(
         minute_markers,
         marker=folium.Circle(radius=10, fill_color="orange", fill_opacity=0.4, color="black", weight=1),
-        tooltip=folium.GeoJsonTooltip(fields=["time"]),
+        tooltip=folium.GeoJsonTooltip(
+            fields=["time", "loc"],
+            style="""font-size: 30px;"""
+        ),
     ).add_to(m)
     m.save("page\\detailed.html")
 
