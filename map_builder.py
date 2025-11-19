@@ -1,6 +1,7 @@
 """Run as a command-line tool.  Builds the map.html file
     to be pushed to GitHub for use in GitHub pages"""
 import os
+import shutil
 import pandas as pd
 import arrow
 import re
@@ -618,6 +619,40 @@ def detailed_route_plot(gpx_file: str = ""):
     m.save("page\\detailed.html")
 
 
+def rollback():
+    """select a previous HikeDetails.csv file to roll back to,
+        and delete and .pts files created after that date"""
+    previous_files = {
+        i: (file, arrow.get(int(file[:file.index(".")]), tzinfo="local"))
+        for i, file in enumerate(os.listdir("Previous Hike Details"), start=1)
+    }
+    selected = input(
+        f"Roll back to HikeDetails.csv as of:\n"
+        f"{'\n'.join(f"\t[{ii}] {dd.format('ddd Do MMM HH:mm:ss')}"
+                     for ii, v in previous_files.items()
+                     for _, dd in [v]
+                     )}\n"
+    )
+    if (selected.isnumeric() and
+            (file_index := int(selected)) in previous_files):
+        chosen_file, rollback_time = previous_files[file_index]
+        os.remove("HikeDetails.csv")
+        shutil.copy(
+            f"Previous Hike Details\\{chosen_file}",
+            "HikeDetails.csv"
+        )
+        rf = "routes"
+        pts_to_remove = filter(
+            lambda p: os.path.getmtime(f"{rf}\\{p}") >
+                      rollback_time.timestamp(),
+            os.listdir(f"{rf}")
+        )
+        for pf in pts_to_remove:
+            os.remove(f"{rf}\\{pf}")
+    else:
+        print("Invalid input")
+
+
 if __name__ == "__main__":
     my_parser = argparse.ArgumentParser(description='Map builder')
     my_parser.add_argument('Operation',
@@ -626,7 +661,8 @@ if __name__ == "__main__":
                            help='[B] build map\n'
                                 '[S] scrape meetup for new events\n'
                                 '[A] add the latest hike\n'
-                                '[D] plot a detailed route')
+                                '[D] plot a detailed route\n'
+                                '[R] roll back to a previous state\n')
     my_parser.add_argument("-s", "--subfolder", type=int)
     args = my_parser.parse_args()
     op = args.Operation.upper()
@@ -636,6 +672,7 @@ if __name__ == "__main__":
         "B": build_map,
         "S": check_and_update_meetup_events,
         "D": detailed_route_plot,
+        "R": rollback,
     }
     if op in options:
         if op == "A" and args.subfolder:
