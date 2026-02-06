@@ -91,7 +91,7 @@ def route_description(data: dict) -> str:
 def kill_outdated_points_files(df_details: pd.DataFrame):
     """remove any .pts file that pre-dates its corresponding .gpx file"""
     def file_timestamp(filename_or_url: str) -> float:
-        if filename_or_url.isnumeric():
+        if re.search(r"^\d{9}\w*", filename_or_url):
             filename_or_url = f"routes\\{filename_or_url}.pts"
         try:
             return os.path.getmtime(filename_or_url)
@@ -139,6 +139,10 @@ def generate_hike_details_csv(df_details: pd.DataFrame) -> pd.DataFrame:
     df_details = pd.merge(left=df_details, right=df_end_points, how="left", on="URL")
     df_details = fill_blanks_in_hike_details(df_details)
     df_details.to_csv("HikeDetails.csv", index=False)
+    df_details.to_csv(
+        f"Previous Hike Details\\{int(arrow.now().timestamp())}.csv",
+        index=False
+    )
     return df_details
 
 
@@ -299,10 +303,15 @@ def cumulatively_find_gpx_files(df_hikes: pd.DataFrame, sub_folders: [str] = Non
     """Given hike data and an ordered list of sub-folders (of the gpx folder),
         will add a GPX column filled in with file paths from the first uploader,
         with each successive uploader's data being used to fill in any remaining gaps"""
+    # TODO: This could be vastly simplified with polars:
+    #   [(get_date_of_gpx_file(f"gpx\\{sf:02}\\{f}"), f"gpx\\{sf:02}\\{f}")
+    #   for sf in range(1, 15)
+    #   for f in os.listdir(f"gpx\\{sf:02}") if f.endswith(".gpx")]
+    #   df_new = pl.DataFrame(data, schema=["date", "gpx"], orient="row").drop_nulls().group_by("date").agg(pl.col("gpx").first())
     df_hikes["GPX"] = nan
     if not sub_folders:
         sub_folders = filter(lambda sf: sf.isnumeric(), os.listdir("gpx"))
-    for i, person in enumerate(sub_folders):
+    for person in sub_folders:
         gpx_series = pd.merge(
             left=df_hikes.drop("GPX", axis=1),
             right=gpx_provided_by(person),
@@ -315,21 +324,31 @@ def cumulatively_find_gpx_files(df_hikes: pd.DataFrame, sub_folders: [str] = Non
 def gpx_provided_by(provider: str) -> pd.DataFrame:
     """Returns a dated list of all gpx files found in each gpx sub-folder"""
     folder_address = f"gpx\\{provider}\\"
-    file_data = []
     suunto_date_pattern = r"\d{4}-\d{2}-\d{2}"
-    for gpx_file in os.listdir(folder_address):
-        if gpx_file[-4:] == ".gpx":
-            if "suuntoapp-" in gpx_file:
-                found_date = arrow.get(re.search(suunto_date_pattern, gpx_file).group()).date()
-            else:
-                found_date = get_date_of_gpx_file(f"{folder_address}{gpx_file}")
-            file_data.append(
-                [
-                    pd.Timestamp(found_date),
-                    f"{folder_address}{gpx_file}"
-                ]
-            )
-    return pd.DataFrame(file_data, columns=["Date", "GPX"])
+
+    def find_date(filename: str) -> arrow.Arrow.date:
+        if "suuntoapp-" in filename:
+            return arrow.get(
+                re.search(suunto_date_pattern, filename).group()
+            ).date()
+        return get_date_of_gpx_file(f"{folder_address}{filename}")
+
+    df = pd.DataFrame(
+        [
+            [
+                pd.Timestamp(find_date(gpx_file)),
+                f"{folder_address}{gpx_file}"
+            ]
+            for gpx_file in filter(lambda fn: fn.endswith(".gpx"),
+                                   os.listdir(folder_address))
+        ],
+        columns=["Date", "GPX"]
+    ).dropna()
+    # if len(df["Date"].unique()) < len(df["Date"]):
+    #     print(f"Please ensure there is only one .gpx file per date. "
+    #           f" {folder_address=}")
+    #     raise ValueError
+    return df
 
 
 def get_date_of_gpx_file(file_path: str) -> arrow.Arrow.date:
@@ -337,6 +356,7 @@ def get_date_of_gpx_file(file_path: str) -> arrow.Arrow.date:
         gpx_text = gf.read()
         found_time = re.search("<time>.+</time>", gpx_text)
         if found_time:
+            # TODO: just the date as string would do
             return arrow.get(found_time.group()[6:16]).date()
 
 
@@ -510,9 +530,15 @@ def integrated_process(sub_folder: int = 7):
             reverse=True
         )[0]
         os.rename(f"{dl}\\{file}", f"gpx\\{sub_folder:02d}\\{file}")
+        # TODO: need generate_hike_details_csv() to have the option of only
+        #       returning a DataFrame without overwriting HikeDetails.csv
+        #       (see plot_one_hike())
         check_and_update_meetup_events()
         hike_date = get_date_of_latest_hike_without_route()
         gpx_file = get_latest_gpx_file()
+        if input(f"Use file {gpx_file} for hike on "
+                 f"{hike_date.strftime('%a. %d %B %Y')}? ") not in "Yy":
+            return
         sub_folder, filename = gpx_file.split("\\")
         ensure_correct_date_in_gpx_file(
             f"gpx\\{sub_folder}",
