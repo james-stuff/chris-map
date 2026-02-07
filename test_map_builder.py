@@ -235,3 +235,39 @@ def test_migrate_web_scraping_to_json():
         lambda h: h.count(",") >= 4, text.split("\n"))]) == 32
     assert re.search("2024-10-26", text)
     assert re.search("maple canter", text)
+
+
+import polars as pl
+def new_find_method():
+    data = [(mb.get_date_of_gpx_file(f"gpx\\{sf:02}\\{f}"), f"gpx\\{sf:02}\\{f}")
+      for sf in range(1, 15)
+      for f in os.listdir(f"gpx\\{sf:02}") if f.endswith(".gpx")]
+    return pl.DataFrame(data, schema=["date", "gpx"], orient="row").drop_nulls().group_by("date").agg(pl.col("gpx").first())
+
+
+def new_load_points(url: str) -> [(float,)]:
+    points_file = f"{url}.pts"
+    if points_file in os.listdir("routes"):
+        with open(f"routes\\{points_file}") as file:
+            return [
+                tuple(map(float, re.split(",", re.sub(r"[()\s]", "", ln))))
+                for ln in re.split("\n", file.read())]
+
+
+def polars_load_points(url: str) -> [(float,)]:
+    points_file = f"{url}.pts"
+    if points_file in os.listdir("routes"):
+        return [
+            *pl.read_csv(
+                "routes\\312863261.pts", has_header=False
+            ).select(
+                lat=pl.col("column_1").str.replace_all(
+                    r"[(\s]", ""),
+                long=pl.col("column_2").str.replace_all(
+                    r"[)\s]", "")
+            ).cast(pl.Float64).iter_rows()
+        ]
+
+
+def test_new_load():
+    print(new_load_points("312863261")[:10])

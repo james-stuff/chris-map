@@ -171,6 +171,8 @@ def points_from_file(url: str) -> [(float,)]:
     """read from specified points file (url, no extension)
         to list of tuple (lat, long), or empty list if
         file doesn't exist"""
+    # TODO: can be reduced from 40msec to 10.6msec using new method;
+    #       3.46msec using polars!
     points_file = f"{url}.pts"
     if points_file in os.listdir("routes"):
         with open(f"routes\\{points_file}") as file:
@@ -308,6 +310,8 @@ def cumulatively_find_gpx_files(df_hikes: pd.DataFrame, sub_folders: [str] = Non
     #   for sf in range(1, 15)
     #   for f in os.listdir(f"gpx\\{sf:02}") if f.endswith(".gpx")]
     #   df_new = pl.DataFrame(data, schema=["date", "gpx"], orient="row").drop_nulls().group_by("date").agg(pl.col("gpx").first())
+    # NB. This does not speed it up significantly.
+    #       It's generating HikeDetails.csv that take a long time (9.32sec)
     df_hikes["GPX"] = nan
     if not sub_folders:
         sub_folders = filter(lambda sf: sf.isnumeric(), os.listdir("gpx"))
