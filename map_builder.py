@@ -3,44 +3,41 @@
 import os
 import shutil
 import pandas as pd
+import polars as pl
 import arrow
 import re
-from numpy import nan
 import requests
 from bs4 import BeautifulSoup as bs
-from itertools import product
 import gpxpy
 from gpxpy import geo
 import folium
 import geojson
 import argparse
 import json
+import gpx_folders_key
 
 
-def build_map(from_existing_csv: bool = False):
-    """run every time new hike(s) are added"""
-    if from_existing_csv:
-        df_hikes = pd.read_csv("HikeDetails.csv", parse_dates=[0])
-    else:
-        df_hikes = generate_hike_details_csv(
-            cumulatively_find_gpx_files(
-                all_known_hikes()
-            ).dropna(subset="GPX")
-        )
+downloads_path = "C:\\Users\\j_a_c\\Downloads"
 
+
+def new_map():
+    print("Building map:")
+    dfh = read_hike_details()
     m = folium.Map(location=(51.5, -0.15), tiles=folium.TileLayer("cartodb positron", name="Clear"), zoom_start=9)
     folium.TileLayer('https://tile.thunderforest.com/transport/{z}/{x}/{y}.png?apikey=a23a350629204ae8b1e22f0729186cb1',
                      attr='&copy; <a href="http://www.thunderforest.com/">Thunderforest</a>, &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
                      name="Railways").add_to(m)
     fg_by_year = {year: folium.FeatureGroup(name=f"{year}")
-                  for year in pd.unique(df_hikes["Date"].dt.year)}
+                  for year in dfh["Date"].str.slice(0, 4).unique()}
     walks_on_map, aggregate_distance = 0, 0
-    for ind in df_hikes.index:
-        hike_data = df_hikes.loc[ind].to_dict()
-        year_fg = fg_by_year[hike_data["Date"].year]
-        make_line(hike_data).add_to(year_fg)
+    print("\tHikes on map: ", end=" " * 3)
+    for hike in dfh.iter_rows(named=True):
+        year_fg = fg_by_year[hike["Date"][:4]]
+        make_line(hike).add_to(year_fg)
         walks_on_map += 1
-        aggregate_distance += hike_data["Distance"]
+        print(f"{'\b' * 3}{walks_on_map:>3}", end="", flush=True)
+        aggregate_distance += hike["Distance"]
+    print("")
 
     for yfg in fg_by_year.values():
         yfg.add_to(m)
@@ -58,9 +55,146 @@ def build_map(from_existing_csv: bool = False):
     m.save(map_file)
 
 
+def build_map():
+    """assume existing HikeDetails.csv is correct and only add
+        new hikes, or re-generate .pts files that are outdated"""
+    new_gpx = [
+        *filter(
+            lambda fn: fn.endswith(".gpx"),
+            os.listdir(downloads_path)
+        )
+    ]
+    dfh = read_hike_details()
+    mod_times = {
+        f"{fld}_mod_time":
+            pl.Series([file_timestamp(fou) for fou in dfh[fld]])
+        for fld in ("GPX", "URL")
+    }
+    df_to_update = dfh.with_columns(**mod_times).filter(
+        pl.col("GPX_mod_time") > pl.col("URL_mod_time")
+    )
+    latest_mapped_date = dfh["Date"].max()
+    print(f"\n{latest_mapped_date=}")
+    df_new = dfh.filter(pl.col("Date").is_null())
+    new_hikes = all_known_hikes().filter(
+                pl.col("Date") > latest_mapped_date
+            )
+    if df_to_update.is_empty() and (len(new_hikes) == len(new_gpx) == 1):
+        print(f"One .gpx file found: {new_gpx[0]}")
+        sf_destination = choose_uploader()
+        new_file_name = f"gpx\\{sf_destination}\\{new_gpx[0]}"
+        hike_date, hike_title, _, url, _ = new_hikes.row(0)
+        print(f"Parsing gpx data from: {new_gpx[0]}"
+              f"\n\tfor {hike_title}, {hike_date}")
+        points = gpxpy_points_from_gpx_file(f"{downloads_path}\\{new_gpx[0]}")
+        points_to_file(points, url)
+        if new_gpx[0] in os.listdir(f"gpx\\{sf_destination}"):
+            new_file_name += f"{int(arrow.now().timestamp())}"
+        os.rename(f"{downloads_path}\\{new_gpx[0]}", new_file_name)
+        new_file_name = ensure_correct_date_in_gpx_file(
+            f"gpx\\{sf_destination}",
+            new_file_name.split("\\")[2],
+            hike_date
+        )
+        df_new = pl.DataFrame(
+            [[*new_hikes.row(0), new_file_name, *calculate_hike_particulars(points)]],
+            schema=dfh.schema, orient="row"
+        )
+        pl.concat([dfh, df_new]).write_csv("HikeDetails.csv")
+    new_map()
+    return df_to_update
+
+
+def hike_matching_table() -> pl.DataFrame:
+    """Table of all known hikes matched with best known .gpx files
+        (= first six columns of HikeDetails.csv)
+        Takes 1.5sec
+        """
+    df = all_known_hikes()
+    max_sf = max(map(int, filter(
+        lambda folder: folder.isnumeric(), os.listdir("gpx"))
+                     )
+                 )
+
+    def sub_folder(fldr: int) -> str: return f"gpx\\{fldr:02}"
+
+    gpx_data = [
+        (
+            get_date_of_gpx_file(f"{sub_folder(i_sf)}\\{gpx_file}"),
+            f"{sub_folder(i_sf)}\\{gpx_file}"
+        )
+        for i_sf in range(1, max_sf + 1)
+        for gpx_file in filter(lambda fn: fn.endswith(".gpx"),
+                               os.listdir(sub_folder(i_sf)))
+    ]
+    return df.join(
+        pl.DataFrame(
+            gpx_data, schema=["Date", "GPX"], orient="row"
+        ).group_by(
+            "Date"
+        ).agg(
+            pl.col("GPX").first()
+        ),
+        how="left", on="Date"
+    )
+
+
+"""
+    hike matching table: derive from HikeDetails.csv
+    if it doesn't exist, create it
+    It is Hike Details minus Start, End and Distance
+    It could also come from all_known_hikes matched with
+        the available GPX files 
+        (compare to all_known_hikes as an alternative way of finding new hikes?)
+    New hikes, combined with newly-matched hikes and those for which
+        the .pts file is out of date, form a new matching table to which
+        Start, End and Distance details are added, then appended to the
+        existing Hike Details (minus the ones whose .pts were recalculated)
+    Only parse .gpx files for the above subset
+    Starts, ends, distances can be calculated from the parse
+    Then draw all the lines and build the map
+"""
+
+
+def choose_uploader() -> str:
+    subfolders = gpx_folders_key.gpx_folders
+    sf_key = input(
+        f"Who produced this file?\n"
+        f"{show_options_list(subfolders.values())}\n"
+    ).zfill(2)
+    if sf_key in subfolders:
+        return sf_key
+    return "07"
+
+
+def show_options_list(numbered_choices: [str]) -> str:
+    all_options = [
+                      f"[{i + 1}] {c}" for i, c in enumerate(numbered_choices)
+                  ] + [f"[N] None of the above"]
+    display_string = ""
+    max_line_length = 72
+    current_line_length = 0
+    for option_text in all_options:
+        if current_line_length + len(option_text) > max_line_length:
+            display_string += "\n"
+            current_line_length = 0
+        display_string += f"\t{option_text}"
+        current_line_length += len(option_text) + 1
+    return display_string
+
+
+def calculate_hike_particulars(route: [geo.Location]) -> tuple[str, str, int]:
+    start, end = (
+        find_proximate_station(route[i_pt])
+        for i_pt in (0, -1)
+    )
+    distance = get_total_distance(route)
+    return start, end, distance
+
+
 def make_line(hike_data: dict) -> folium.GeoJson:
     """create GeoJson feature for the route to be added to the map"""
-    points = [pt[::-1] for pt in points_from_file(hike_data["URL"])]
+    points = points_from_file(hike_data["URL"], longitude_first=True)
     date = arrow.get(hike_data["Date"])
     tooltip = (f"{date.format('ddd Do MMM YYYY')}<br/>"
                f"{hike_data['Title']}<br/>"
@@ -75,7 +209,7 @@ def make_line(hike_data: dict) -> folium.GeoJson:
     )
 
 
-def distance_description(distance_metres: int) -> str:
+def distance_description(distance_metres: int | float) -> str:
     dist_mls, dist_kms = (distance_metres / factor
                           for factor in (1_609, 1_000))
     return f"{dist_mls:.1f} miles / {dist_kms:.1f} km"
@@ -88,16 +222,17 @@ def route_description(data: dict) -> str:
     return f"{start} to {end}"
 
 
+def file_timestamp(filename_or_url: str) -> float:
+    if not re.search(r"\\", filename_or_url):
+        filename_or_url = f"routes\\{filename_or_url}.pts"
+    try:
+        return os.path.getmtime(filename_or_url)
+    except FileNotFoundError:
+        return 0
+
+
 def kill_outdated_points_files(df_details: pd.DataFrame):
     """remove any .pts file that pre-dates its corresponding .gpx file"""
-    def file_timestamp(filename_or_url: str) -> float:
-        if re.search(r"^\d{9}\w*", filename_or_url):
-            filename_or_url = f"routes\\{filename_or_url}.pts"
-        try:
-            return os.path.getmtime(filename_or_url)
-        except FileNotFoundError:
-            return 0
-
     df = df_details.loc[:, ["URL", "GPX"]]
     df["Kill"] = df["GPX"].apply(file_timestamp) > df["URL"].apply(file_timestamp)
     for u in df.loc[df["Kill"]]["URL"]:
@@ -105,51 +240,34 @@ def kill_outdated_points_files(df_details: pd.DataFrame):
             os.remove(f"routes\\{u}.pts")
 
 
-def generate_hike_details_csv(df_details: pd.DataFrame) -> pd.DataFrame:
-    """produce from scratch the DataFrame containing all necessary details
-        for all plottable hikes, and saves to a new .csv file"""
-    kill_outdated_points_files(df_details)
-    df_stations = build_stations_df()
-    starts, ends, distances = ([] for _ in range(3))
-    hikes_to_be_plotted = 0     # for diagnostic info only
-    for i_hike in df_details.index:
-        hike_info = df_details.loc[i_hike].to_dict()
-        points = [geo.Location(*pt) for pt in
-                  points_from_file(hike_info["URL"])]
-        if not points:
-            print(f"Parsing gpx data from: {hike_info['GPX']}"
-                  f"\n\tfor {hike_info['Title']}, {hike_info['Date']}"
-                  f"\n\t{hikes_to_be_plotted=}")
-            points = gpxpy_points_from_gpx_file(hike_info["GPX"])
-            points_to_file(points, hike_info["URL"])
-        s, e = (find_proximate_station(points[i_pt], df_stations)
-                for i_pt in (0, -1))
-        starts.append(s)
-        ends.append(e)
-        distances.append(get_total_distance(points))
-        hikes_to_be_plotted += 1
-    df_end_points = pd.DataFrame(
-        {
-            "URL": df_details["URL"],
-            "Start": starts,
-            "End": ends,
-            "Distance": distances,
-        }
+def rebuild_hike_details() -> pl.DataFrame:
+    """from scratch"""
+    dfh = hike_matching_table().drop_nulls("GPX")
+    dfp = pl.DataFrame(
+        [calculate_hike_particulars(
+            [geo.Location(*pt) for pt in points_from_file(u)])
+            for u in dfh["URL"]],
+        schema=["Start", "End", "Distance"], orient="row"
     )
-    df_details = pd.merge(left=df_details, right=df_end_points, how="left", on="URL")
-    df_details = fill_blanks_in_hike_details(df_details)
-    df_details.to_csv("HikeDetails.csv", index=False)
-    df_details.to_csv(
-        f"Previous Hike Details\\{int(arrow.now().timestamp())}.csv",
-        index=False
-    )
-    return df_details
+    dfh = pl.concat([dfh, dfp], how="horizontal")
+    return fill_blanks_in_hike_details(dfh)
 
 
-def fill_blanks_in_hike_details(df_in: pd.DataFrame) -> pd.DataFrame:
-    df_manual = pd.read_excel("ManualStartEnd.ods", engine="odf", usecols=[2, 4, 5], converters={"URL": str})
-    df_manual = pd.merge(left=df_in[["Date", "URL"]], right=df_manual, how="left", on="URL")
-    return df_in.fillna(df_manual)
+def read_hike_details(filename: str = "HikeDetails.csv") -> pl.DataFrame:
+    if filename != "HikeDetails.csv":
+        filename = f"Previous Hike Details\\{filename}"
+    return pl.read_csv(filename, schema_overrides={"URL": pl.String})
+
+
+def fill_blanks_in_hike_details(df_in: pl.DataFrame) -> pl.DataFrame:
+    df_manual = pl.read_ods(
+        "ManualStartEnd.ods", schema_overrides={"URL": pl.String}
+    ).select("URL", "Start", "End")
+    df_out = df_in.join(df_manual, how="left", on="URL")
+    return df_out.with_columns(
+        Start=pl.col("Start").fill_null(pl.col("Start_right")),
+        End=pl.col("End").fill_null(pl.col("End_right")),
+    ).select(pl.exclude("Start_right", "End_right"))
 
 
 def gpxpy_points_from_gpx_file(filepath: str,
@@ -167,16 +285,16 @@ def gpxpy_points_from_gpx_file(filepath: str,
     return gpx.tracks[0].segments[0].points
 
 
-def points_from_file(url: str) -> [(float,)]:
+def points_from_file(url: str, longitude_first: bool = False) -> [(float,)]:
     """read from specified points file (url, no extension)
         to list of tuple (lat, long), or empty list if
         file doesn't exist"""
-    # TODO: can be reduced from 40msec to 10.6msec using new method;
-    #       3.46msec using polars!
     points_file = f"{url}.pts"
     if points_file in os.listdir("routes"):
-        with open(f"routes\\{points_file}") as file:
-            return [eval(ln) for ln in file.read().split("\n")]
+        df_pts = pl.read_csv(f"routes\\{url}.pts")
+        if longitude_first:
+            df_pts = df_pts.select("long", "lat")
+        return [*df_pts.iter_rows()]
     return []
 
 
@@ -184,12 +302,12 @@ def points_to_file(points: [geo.Location], filename_stem: str):
     """save a list of gpxpy points to file (no extension).
         Overwrites any existing file with the same name"""
     folder, filename = "routes", f"{filename_stem}.pts"
-    # if filename not in os.listdir(folder):
-    with open(f"{folder}\\{filename}", "w") as file:
-        file.write("\n".join(
-            f"({pt.latitude}, {pt.longitude})"
-            for pt in points
-        ))
+    pl.DataFrame(
+        {
+            "lat": [pt.latitude for pt in points],
+            "long": [pt.longitude for pt in points]
+        }
+    ).write_csv(f"{folder}\\{filename}")
 
 
 def get_total_distance(route: [geo.Location]) -> int:
@@ -203,66 +321,57 @@ def get_total_distance(route: [geo.Location]) -> int:
     return int(distance)
 
 
-def find_proximate_station(location: geo.Location,
-                           df_station_locations: pd.DataFrame, tolerance_metres: int = 500) -> str:
+def find_proximate_station(location: geo.Location) -> str | None:
     tolerance_degrees = 0.05    # equates to <= 5km either side
-    func_locals = locals()
-    query_string = " & ".join(
-        f"({co_ord} {'<' if bound == 'max' else '>'} {eval(f'location.{co_ord}', globals(), func_locals)} "
-        f"{'+' if bound == 'max' else '-'} {tolerance_degrees})"
-        for bound, co_ord in [*product(("max", "min"), ("latitude", "longitude"))]
-    )
-    stn_subset = df_station_locations.query(query_string).reset_index(drop=True)
-    if len(stn_subset) > 0:
-        ll_pairs = [
-            (p1, p2) for p1, p2 in
-            zip(*[stn_subset[f].to_list()
-                  for f in ('latitude', 'longitude')])]
-        s_distances = pd.Series(
-            [geo.distance(
-                *p, 0, location.latitude,
-                location.longitude, 0
-            ) for p in ll_pairs], name='distance'
+
+    def ib_args(lat_or_long: str) -> ():
+        return (
+                location.__getattribute__(f"{lat_or_long}itude") +
+                (n * tolerance_degrees)
+                for n in (-1, 1)
         )
-        return pd.merge(
-            left=stn_subset, right=s_distances,
-            right_index=True, left_index=True
-        ).sort_values(by='distance')['station_name'].iat[0]
-    return nan
-
-
-def build_stations_df() -> pd.DataFrame:
-    def remove_unnecessary_words(full_name: str) -> str:
-        return full_name.replace(" Rail Station", "")
-
-    df_stations = pd.read_csv(
-        f"uk-train-stations.csv",
-        usecols=[1, 2, 3],
-        converters={"station_name": remove_unnecessary_words}
+    stn_subset = df_stations.filter(
+        pl.col("latitude").is_between(*ib_args("lat")),
+        pl.col("longitude").is_between(*ib_args("long"))
+    ).with_columns(
+        distance=((pl.col("latitude") - location.latitude) ** 2 +
+                  (pl.col("longitude") - location.longitude) ** 2) ** 0.5
     )
-    df_tube = pd.read_csv(
-        f"Stations 20180921.csv",
-        usecols=[2, 8, 9],
-        names=["station_name", "longitude", "latitude"],
-        skiprows=[0]
+    if not stn_subset.is_empty():
+        return stn_subset.sort(by="distance")["station_name"].item(0)
+
+
+def build_stations_df() -> pl.DataFrame:
+    df_mainline = pl.read_csv(
+        "uk-train-stations.csv", columns=[1, 2, 3]
+    ).with_columns(
+        pl.col("station_name").str.replace(" Rail Station", "")
     )
-    return pd.concat([df_stations, df_tube], ignore_index=True)
+    df_tube = pl.read_csv(
+        "Stations 20180921.csv", columns=[2, 8, 9]
+    ).rename(
+        {old: new
+         for old, new in zip(["NAME", "y", "x"], df_mainline.columns)}
+    ).select(df_mainline.columns)
+    return pl.concat([df_mainline, df_tube])
 
 
-def all_known_hikes() -> pd.DataFrame:
+def all_known_hikes() -> pl.DataFrame:
     df_hist = all_historic_hikes()
     df_scraped = hikes_from_subsequent_scrapes()
-    return pd.concat([df_hist, df_scraped]).reset_index(drop=True)
+    return pl.concat([df_hist, df_scraped])
 
 
-def all_historic_hikes() -> pd.DataFrame:
+def all_historic_hikes() -> pl.DataFrame:
     df_historic_scrape = hikes_from_original_meetup_scrape()
-    df_man = pd.read_excel("ManuallyAddedHikes.ods", sheet_name="Sheet1", engine="odf",
-                           dtype={"URL": str})
-    return pd.concat([df_historic_scrape, df_man]).reset_index(drop=True)
+    df_man = pl.read_ods(
+        "ManuallyAddedHikes.ods",
+        schema_overrides={"Date": pl.String, "URL": pl.String}
+    )
+    return pl.concat([df_historic_scrape, df_man])
 
 
-def hikes_from_original_meetup_scrape() -> pd.DataFrame:
+def hikes_from_original_meetup_scrape() -> pl.DataFrame:
     """Load all hikes captured by the selenium scrape of the Past Events page
         on 11th March 2024 (going back to first ever hike on 13th January 2019)"""
     with open("Hikes.txt", "r") as file:
@@ -276,9 +385,10 @@ def hikes_from_original_meetup_scrape() -> pd.DataFrame:
     data = []
     shift_dates = [arrow.Arrow(2022, 11, 4), arrow.Arrow(2023, 10, 27)]
     for walk in re.finditer(queries["Date"], text):
-        date = arrow.get(walk.group()[5:], "MMM D, YYYY").naive
+        date = arrow.get(walk.group()[5:], "MMM D, YYYY")
         if arrow.get(date) in shift_dates:
-            date = arrow.get(date).shift(days=1).naive
+            date = arrow.get(date).shift(days=1)
+        date = date.format("YYYY-MM-DD")
         sub_text = text[walk.start():]
         title, attendees, url = (
             re.search(q, sub_text).group()
@@ -288,96 +398,45 @@ def hikes_from_original_meetup_scrape() -> pd.DataFrame:
         title = title.split("\n")[1]
         attendees = int(attendees[:attendees.index(" ")])
         data.append([date, title, attendees, url])
-    df_hikes = pd.DataFrame(data, columns=queries.keys())
-    df_hikes["Source"] = "Free"
-    return df_hikes
+    return pl.DataFrame(
+        data, schema=[*queries.keys()], orient="row"
+    ).with_columns(
+        Source=pl.lit("Free")
+    )
 
 
-def hikes_from_subsequent_scrapes() -> pd.DataFrame:
+def hikes_from_subsequent_scrapes() -> pl.DataFrame:
     scraped_file = "ScrapedHikes.csv"
     if scraped_file in os.listdir():
-        return pd.read_csv(
-            scraped_file, converters={"Date": pd.Timestamp, "URL": str})
-    return pd.DataFrame({})
+        return pl.read_csv(
+            scraped_file,
+            schema_overrides={"Date": pl.String, "URL": pl.String}
+        )
+    return pl.DataFrame({})
 
 
-def cumulatively_find_gpx_files(df_hikes: pd.DataFrame, sub_folders: [str] = None) -> pd.DataFrame:
-    """Given hike data and an ordered list of sub-folders (of the gpx folder),
-        will add a GPX column filled in with file paths from the first uploader,
-        with each successive uploader's data being used to fill in any remaining gaps"""
-    # TODO: This could be vastly simplified with polars:
-    #   [(get_date_of_gpx_file(f"gpx\\{sf:02}\\{f}"), f"gpx\\{sf:02}\\{f}")
-    #   for sf in range(1, 15)
-    #   for f in os.listdir(f"gpx\\{sf:02}") if f.endswith(".gpx")]
-    #   df_new = pl.DataFrame(data, schema=["date", "gpx"], orient="row").drop_nulls().group_by("date").agg(pl.col("gpx").first())
-    # NB. This does not speed it up significantly.
-    #       It's generating HikeDetails.csv that take a long time (9.32sec)
-    df_hikes["GPX"] = nan
-    if not sub_folders:
-        sub_folders = filter(lambda sf: sf.isnumeric(), os.listdir("gpx"))
-    for person in sub_folders:
-        gpx_series = pd.merge(
-            left=df_hikes.drop("GPX", axis=1),
-            right=gpx_provided_by(person),
-            how="left", on="Date"
-        )["GPX"]
-        df_hikes["GPX"] = df_hikes["GPX"].fillna(gpx_series)
-    return df_hikes
-
-
-def gpx_provided_by(provider: str) -> pd.DataFrame:
-    """Returns a dated list of all gpx files found in each gpx sub-folder"""
-    folder_address = f"gpx\\{provider}\\"
-    suunto_date_pattern = r"\d{4}-\d{2}-\d{2}"
-
-    def find_date(filename: str) -> arrow.Arrow.date:
-        if "suuntoapp-" in filename:
-            return arrow.get(
-                re.search(suunto_date_pattern, filename).group()
-            ).date()
-        return get_date_of_gpx_file(f"{folder_address}{filename}")
-
-    df = pd.DataFrame(
-        [
-            [
-                pd.Timestamp(find_date(gpx_file)),
-                f"{folder_address}{gpx_file}"
-            ]
-            for gpx_file in filter(lambda fn: fn.endswith(".gpx"),
-                                   os.listdir(folder_address))
-        ],
-        columns=["Date", "GPX"]
-    ).dropna()
-    # if len(df["Date"].unique()) < len(df["Date"]):
-    #     print(f"Please ensure there is only one .gpx file per date. "
-    #           f" {folder_address=}")
-    #     raise ValueError
-    return df
-
-
-def get_date_of_gpx_file(file_path: str) -> arrow.Arrow.date:
+def get_date_of_gpx_file(file_path: str) -> str:
     with open(f"{file_path}", encoding="utf-8") as gf:
         gpx_text = gf.read()
         found_time = re.search("<time>.+</time>", gpx_text)
         if found_time:
-            # TODO: just the date as string would do
-            return arrow.get(found_time.group()[6:16]).date()
+            return found_time.group()[6:16]
 
 
 def check_and_update_meetup_events():
-    df_new = scrape_past_events_for_chris_hikes().sort_values(by="Date")
+    df_new = scrape_past_events_for_chris_hikes().sort(by="Date")
     scraped_file = "ScrapedHikes.csv"
     if scraped_file in os.listdir():
-        df_existing = pd.read_csv(scraped_file, converters={"URL": str})
+        df_existing = pl.read_csv(scraped_file, schema_overrides={"URL": str})
         existing_urls = df_existing["URL"].to_list()
-        df_to_add = df_new.drop(df_new.loc[df_new["URL"].isin(existing_urls)].index)
-        if len(df_to_add):
-            pd.concat([df_existing, df_to_add]).to_csv(scraped_file, index=False, date_format="%Y-%m-%d")
+        df_to_add = df_new.filter(~pl.col("URL").is_in(existing_urls))
+        if not df_to_add.is_empty():
+            pl.concat([df_existing, df_to_add]).write_csv(scraped_file)
     else:
-        df_new.to_csv(scraped_file, index=False)
+        df_new.write_csv(scraped_file)
 
 
-def scrape_past_events_for_chris_hikes() -> pd.DataFrame:
+def scrape_past_events_for_chris_hikes() -> pl.DataFrame:
     url = "https://www.meetup.com/free-outdoor-trips-from-london/events/?type=past"
     response = requests.get(url)
     html = response.text
@@ -403,15 +462,20 @@ def scrape_past_events_for_chris_hikes() -> pd.DataFrame:
                     "Free",
                 )
             )
-    return pd.DataFrame(data=event_details, columns=["Date", "Title", "Attendees", "URL", "Source"])
+    return pl.DataFrame(
+        event_details,
+        schema=["Date", "Title", "Attendees", "URL", "Source"],
+        orient="row"
+    )
 
 
-def ensure_correct_date_in_gpx_file(folder_path: str, file_fragment: str, correct_ymd: (int,)):
+def ensure_correct_date_in_gpx_file(
+        folder_path: str, file_fragment: str, correct_date: str
+) -> str:
     """produce a new version of a gpx file with correct date"""
     filename = [*filter(lambda fn: re.search(file_fragment, fn) and
                         fn[-4:] == ".gpx",
                         os.listdir(folder_path))][0]
-    correct_date = arrow.Arrow(*correct_ymd).date()
     message = f"Setting date to {correct_date} for {folder_path}\\{filename}"
     with open(f"{folder_path}\\{filename}", encoding="utf-8") as file:
         text = file.read()
@@ -421,7 +485,7 @@ def ensure_correct_date_in_gpx_file(folder_path: str, file_fragment: str, correc
             print(message)
             new_text = text.replace(f"{existing_date}", f"{correct_date}")
         else:
-            return
+            return f"{folder_path}\\{filename}"
     else:
         print(message, "(Date was not present)")
         metadata = f"\n<metadata>\n\t<time>{correct_date}</time>\n</metadata>"
@@ -434,8 +498,9 @@ def ensure_correct_date_in_gpx_file(folder_path: str, file_fragment: str, correc
         else:
             insert_at_position = re.search("<gpx .+>", text).end()
             new_text = text[:insert_at_position] + metadata + text[insert_at_position:]
+    corrected_file = f"{folder_path}\\{filename[:-4]}_time-corrected.gpx"
     with open(
-            f"{folder_path}\\{filename[:-4]}_time-corrected.gpx", "w",
+            corrected_file, "w",
             encoding="utf-8"
     ) as new_file:
         new_file.write(new_text)
@@ -443,6 +508,7 @@ def ensure_correct_date_in_gpx_file(folder_path: str, file_fragment: str, correc
         f"{folder_path}\\{filename}",
         f"{folder_path}\\{filename[:-4]}._gpx",
     )
+    return corrected_file
 
 
 def snip_at(file_path: str, station_name: str, discard_before: bool = True):
@@ -477,36 +543,36 @@ def snip_at(file_path: str, station_name: str, discard_before: bool = True):
 
 
 def locate_station(station_name: str) -> geo.Location:
-    df_stations = build_stations_df()
+    df_stations = build_stations_df().to_pandas()
     station_pos = df_stations.query(
         f"station_name.str.startswith('{station_name}')"
     ).iloc[0, [1, 2]].to_list()
     return geo.Location(*station_pos)
 
 
-def plot_one_hike(url: str):
-    """Utility function to verify a route looks good before committing to it"""
-    print("\nPlotting a single hike:")
-    df_one = all_known_hikes().query(f"URL == '{url}'").reset_index(drop=True)
-    df_hike_dets = generate_hike_details_csv(
-        cumulatively_find_gpx_files(df_one)
-    )
-    print(df_hike_dets)
-    build_map(True)
+# def plot_one_hike(url: str):
+#     """Utility function to verify a route looks good before committing to it"""
+#     print("\nPlotting a single hike:")
+#     df_one = all_known_hikes().query(f"URL == '{url}'").reset_index(drop=True)
+#     df_hike_dets = generate_hike_details_csv(
+#         cumulatively_find_gpx_files(df_one)
+#     )
+#     print(df_hike_dets)
+#     build_map(True)
 
 
-def missing_hikes(start_year: int = 2019) -> pd.DataFrame:
-    """Utility function to generate a table of hikes for which data is still needed"""
-    def event_page_url_stem(src: str) -> str:
-        group = "free-outdoor-trips-from-london" if src == "Free" else "metropolitan-walkers"
-        return f"https://www.meetup.com/{group}/events/"
-    df = cumulatively_find_gpx_files(
-        all_known_hikes()).sort_values(by="Date", ascending=False)
-    df = df.loc[df["GPX"].isnull() & (df["Date"].dt.year >= start_year)][["Date", "Title", "Source", "URL"]]
-    df["EventPage"] = df["Source"].apply(event_page_url_stem) + df["URL"]
-    df = df.drop(["Source", "URL"], axis=1)
-    df.to_csv("gaps.csv")
-    return df
+# def missing_hikes(start_year: int = 2019) -> pd.DataFrame:
+#     """Utility function to generate a table of hikes for which data is still needed"""
+#     def event_page_url_stem(src: str) -> str:
+#         group = "free-outdoor-trips-from-london" if src == "Free" else "metropolitan-walkers"
+#         return f"https://www.meetup.com/{group}/events/"
+#     df = cumulatively_find_gpx_files(
+#         all_known_hikes()).sort_values(by="Date", ascending=False)
+#     df = df.loc[df["GPX"].isnull() & (df["Date"].dt.year >= start_year)][["Date", "Title", "Source", "URL"]]
+#     df["EventPage"] = df["Source"].apply(event_page_url_stem) + df["URL"]
+#     df = df.drop(["Source", "URL"], axis=1)
+#     df.to_csv("gaps.csv")
+#     return df
 
 
 def integrated_process(sub_folder: int = 7):
@@ -517,9 +583,7 @@ def integrated_process(sub_folder: int = 7):
     # TODO: make the process more resilient by tackling:
     #       - filename conflicts
     #       - process is generally confusing
-    #       - hard to roll back and start again
     #       - what other issues have occurred?
-    #   What to do about Boulogne weekend?
     #   Support multi-part hikes/events
     dl = "C:\\Users\\j_a_c\\Downloads"
     downloaded_gpx = [
@@ -549,7 +613,7 @@ def integrated_process(sub_folder: int = 7):
             filename,
             (hike_date.year, hike_date.month, hike_date.day)
         )
-        build_map()
+        # build_map()
     else:
         print("No new .gpx downloads found")
 
@@ -649,9 +713,10 @@ def detailed_route_plot(gpx_file: str = ""):
     m.save("page\\detailed.html")
 
 
-def rollback():
+def rollback(chosen_file: str = ""):
     """select a previous HikeDetails.csv file to roll back to,
         and delete and .pts files created after that date"""
+    # TODO: only force choice if chosen_file not passed
     previous_files = {
         i: (file, arrow.get(int(file[:file.index(".")]), tzinfo="local"))
         for i, file in enumerate(os.listdir("Previous Hike Details"), start=1)
@@ -671,16 +736,20 @@ def rollback():
             f"Previous Hike Details\\{chosen_file}",
             "HikeDetails.csv"
         )
-        rf = "routes"
-        pts_to_remove = filter(
-            lambda p: os.path.getmtime(f"{rf}\\{p}") >
-                      rollback_time.timestamp(),
-            os.listdir(f"{rf}")
-        )
-        for pf in pts_to_remove:
-            os.remove(f"{rf}\\{pf}")
+        # TODO: re-instate this code when going live
+        # rf = "routes"
+        # pts_to_remove = filter(
+        #     lambda p: os.path.getmtime(f"{rf}\\{p}") >
+        #               rollback_time.timestamp(),
+        #     os.listdir(f"{rf}")
+        # )
+        # for pf in pts_to_remove:
+        #     os.remove(f"{rf}\\{pf}")
     else:
         print("Invalid input")
+
+
+df_stations = build_stations_df()
 
 
 if __name__ == "__main__":

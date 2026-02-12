@@ -6,16 +6,19 @@ from gpxpy import geo
 import shutil
 import gpxpy
 import re
+import polars as pl
+from polars.testing import assert_frame_equal
 
 
 def test_historic_hikes():
     df_scraped = mb.hikes_from_original_meetup_scrape()
     assert len(df_scraped) == 192
-    assert len(df_scraped.loc[df_scraped["Date"].dt.date == arrow.Arrow(2023, 10, 28).date()]) == 1
-    assert arrow.Arrow(2023, 10, 27).date() not in df_scraped["Date"].dt.date.to_list()
-    assert len(df_scraped.loc[df_scraped["Date"].dt.date == arrow.Arrow(2022, 11, 5).date()]) == 1
-    assert arrow.Arrow(2022, 11, 4).date() not in df_scraped["Date"].dt.date.to_list()
-    assert df_scraped.iat[0, 1].startswith("Nature near London - The only moat in Middlesex")
+    assert len(df_scraped.filter(Date="2023-10-28")) == 1
+    assert "2023-10-27" not in df_scraped["Date"]
+    assert len(df_scraped.filter(Date="2022-11-05")) == 1
+    assert "2022-11-04" not in df_scraped["Date"]
+    assert df_scraped.item(0, 1).startswith(
+        "Nature near London - The only moat in Middlesex")
     df_all_historic = mb.all_historic_hikes()
     assert len(df_all_historic) == 216
 
@@ -68,15 +71,15 @@ def test_gap_filling():
 
 def test_correcting_dates():
     corrections = {
-        "Gravesend_Sole_Street_Borough_Green_.gpx": (2021, 8, 14),  # has no date
-        "Holland_Park_to_Trafalgar_Square.gpx": (2023, 12, 17),     # has incorrect date
+        "Gravesend_Sole_Street_Borough_Green_.gpx": "2021-08-14",  # has no date
+        "Holland_Park_to_Trafalgar_Square.gpx": "2023-12-17",     # has incorrect date
     }
     test_folder = "gpx\\test"
     for filename, ymd in corrections.items():
         mb.ensure_correct_date_in_gpx_file(test_folder, filename, ymd)
         new_fn = f"{filename[:-4]}_time-corrected.gpx"
         assert new_fn in os.listdir(test_folder)
-        assert mb.get_date_of_gpx_file(f"{test_folder}\\{new_fn}") == arrow.Arrow(*ymd).date()
+        assert mb.get_date_of_gpx_file(f"{test_folder}\\{new_fn}") == ymd
         gpx_points = mb.gpxpy_points_from_gpx_file(f"{test_folder}\\{new_fn}")
         assert len(gpx_points) > 800
     for corrected_file in [ff for ff in os.listdir(test_folder) if ff[-19:] == "_time-corrected.gpx"]:
@@ -112,7 +115,7 @@ def test_working_with_points_files():
     tp1 = mb.points_from_file(tf1)
     verify_valid_points_format(tp1)
     for del_file in (test_file, tf1):
-        os.remove(f"routes\\{del_file}.pts")
+        safe_remove(f"routes\\{del_file}.pts")
 
 
 def safe_remove(path: str):
@@ -205,69 +208,98 @@ def test_split_file_at_gaps():
                 #     assert match.start() == 1092970
 
 
-def test_find_windsor_and_eton_riverside():
+def test_station_finding():
     # timeit results, 22nd Oct 2024:
     # Original: 100 loops, best of 5: 2.97 msec per loop
     # improved: 50 loops, best of 5: 4.38 msec per loop
-    stations = mb.build_stations_df()
+    # 12/02/2026 polars version:
+    #   200 loops, best of 5: 1.25 msec per loop
     assert mb.find_proximate_station(
-        mb.geo.Location(51.485628, -0.606757),
-        stations
+        mb.geo.Location(51.485628, -0.606757)
     ) == "Windsor & Eton Riverside"
     # make sure it's not too slow when there are lots of stations nearby:
     central_london = mb.geo.Location(51.515276, -0.109188)
-    print(mb.find_proximate_station(central_london, stations))
+    print(mb.find_proximate_station(central_london))
     # warn when not close to a station
     chesterford = geo.Location(52.066359, 0.208629)
-    mb.find_proximate_station(chesterford, stations)
+    mb.find_proximate_station(chesterford)
+    df_new = mb.rebuild_hike_details()
+    dfh = mb.read_hike_details().join(
+        df_new.select("Date", "End"), on="Date", how="left"
+    ).filter(pl.col("End") != pl.col("End_right"))
+    print(dfh)
 
 
 def test_migrate_web_scraping_to_json():
     """TDD for adjusting to meetup format change"""
-    # df_past = mb.scrape_past_events_for_chris_hikes()
-    # print(df_past)
-    # df_past.info()
-    mb.check_and_update_meetup_events()
     scraped_file = "ScrapedHikes.csv"
-    with open(scraped_file) as sf:
+    with open(scraped_file, encoding="utf-8") as sf:
         text = sf.read()
     assert len([*filter(
-        lambda h: h.count(",") >= 4, text.split("\n"))]) == 32
+        lambda h: h.count(",") >= 4, text.split("\n"))]) >= 32
     assert re.search("2024-10-26", text)
     assert re.search("maple canter", text)
 
 
-import polars as pl
-def new_find_method():
-    data = [(mb.get_date_of_gpx_file(f"gpx\\{sf:02}\\{f}"), f"gpx\\{sf:02}\\{f}")
-      for sf in range(1, 15)
-      for f in os.listdir(f"gpx\\{sf:02}") if f.endswith(".gpx")]
-    return pl.DataFrame(data, schema=["date", "gpx"], orient="row").drop_nulls().group_by("date").agg(pl.col("gpx").first())
+def verify_hike_details():
+    latest_correct_filename = "1770650777.csv"
+    df_correct = pl.read_csv(
+        f"Previous Hike Details\\{latest_correct_filename}",
+        schema_overrides={"URL": pl.String}
+    )
+    df_candidate = pl.read_csv(
+        f"HikeDetails.csv",
+        schema_overrides={"URL": pl.String}
+    )
+    assert_frame_equal(df_candidate, df_correct)
 
 
-def new_load_points(url: str) -> [(float,)]:
-    points_file = f"{url}.pts"
-    if points_file in os.listdir("routes"):
-        with open(f"routes\\{points_file}") as file:
-            return [
-                tuple(map(float, re.split(",", re.sub(r"[()\s]", "", ln))))
-                for ln in re.split("\n", file.read())]
-
-
-def polars_load_points(url: str) -> [(float,)]:
-    points_file = f"{url}.pts"
-    if points_file in os.listdir("routes"):
-        return [
-            *pl.read_csv(
-                "routes\\312863261.pts", has_header=False
-            ).select(
-                lat=pl.col("column_1").str.replace_all(
-                    r"[(\s]", ""),
-                long=pl.col("column_2").str.replace_all(
-                    r"[)\s]", "")
-            ).cast(pl.Float64).iter_rows()
-        ]
+def test_bs():
+    print("Hi", end="")
+    print(f"{'\b' * 2}o")
 
 
 def test_new_load():
-    print(new_load_points("312863261")[:10])
+    print(mb.new_map())
+    # verify_hike_details()
+
+
+def test_new_process():
+    fn_correct, fn_previous = "1770650777.csv", "1769940683.csv"
+    roland_file = "Knockholt_via_Hogtrough_Hill_to_Chelsfield"
+    os.rename(f"gpx\\11\\{roland_file}._gpx",
+              f"{mb.downloads_path}\\{roland_file}.gpx")
+    mb.rollback(fn_previous)
+    mb.new_build()
+    print(f"{mb.read_hike_details()['GPX'].item(-1)=}")
+    print(f"{mb.read_hike_details(fn_correct)['GPX'].item(-1)=}")
+    assert_frame_equal(
+        *(mb.read_hike_details(file)
+          for file in ("HikeDetails.csv", fn_correct))
+    )
+
+
+def test_own_file():
+    """(no date correction needed)"""
+    fn_correct, fn_previous = "1765671608.csv", "1765125041.csv"
+    my_file = "Christmas_Party_Hike_2025"
+    # os.rename(f"gpx\\07\\{my_file}.gpx",
+    #           f"{mb.downloads_path}\\{my_file}.gpx")
+    # mb.rollback(fn_previous)
+    mb.build_map()
+    print(f"{mb.read_hike_details()['GPX'].item(-1)=}")
+    print(f"{mb.read_hike_details(fn_correct)['GPX'].item(-1)=}")
+    assert_frame_equal(
+        *(mb.read_hike_details(file)
+          for file in ("HikeDetails.csv", fn_correct))
+    )
+
+
+def test_rebuild():
+    df_new = mb.rebuild_hike_details()
+    print(f"{df_new=}")
+    print(f"{df_new.filter(pl.col('Date').str.starts_with('2025-07-0'))}")
+    assert_frame_equal(
+        df_new,
+        mb.read_hike_details("1770650777.csv").cast({pl.Float64: pl.Int64})
+    )
