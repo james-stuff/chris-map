@@ -152,10 +152,6 @@ def test_add_new_hike_workflow():
     os.rename(mar_9th_file.replace("._gpx", ".gpx"), mar_9th_file)
 
 
-def test_plot_one_hike_only():
-    mb.plot_one_hike("302940231")
-
-
 def test_show_gaps():
     print(mb.missing_hikes(2020))
 
@@ -254,11 +250,6 @@ def verify_hike_details():
     assert_frame_equal(df_candidate, df_correct)
 
 
-def test_bs():
-    print("Hi", end="")
-    print(f"{'\b' * 2}o")
-
-
 def test_new_load():
     print(mb.new_map())
     # verify_hike_details()
@@ -270,7 +261,7 @@ def test_new_process():
     os.rename(f"gpx\\11\\{roland_file}._gpx",
               f"{mb.downloads_path}\\{roland_file}.gpx")
     mb.rollback(fn_previous)
-    mb.new_build()
+    mb.build_map()
     print(f"{mb.read_hike_details()['GPX'].item(-1)=}")
     print(f"{mb.read_hike_details(fn_correct)['GPX'].item(-1)=}")
     assert_frame_equal(
@@ -296,6 +287,7 @@ def test_own_file():
 
 
 def test_rebuild():
+    print(mb.find_all_gpx_files())
     df_new = mb.rebuild_hike_details()
     print(f"{df_new=}")
     print(f"{df_new.filter(pl.col('Date').str.starts_with('2025-07-0'))}")
@@ -303,3 +295,11 @@ def test_rebuild():
         df_new,
         mb.read_hike_details("1770650777.csv").cast({pl.Float64: pl.Int64})
     )
+
+
+def test_detailed_plot():
+    # print(mb.df_from_gpx("gpx\\07\\Haslemere_Hills.gpx"))
+    # mb.detailed_route_plot("gpx\\07\\Haslemere_Hills.gpx")
+    "gpx\\14\\"
+    mb.detailed_route_plot()
+    # mb.detailed_route_plot("gpx\\14\\Ivinghoe Beacon10-01-2026_time-corrected.gpx")

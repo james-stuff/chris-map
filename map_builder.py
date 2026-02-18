@@ -15,6 +15,7 @@ import geojson
 import argparse
 import json
 import gpx_folders_key
+import webbrowser
 
 
 downloads_path = "C:\\Users\\j_a_c\\Downloads"
@@ -76,6 +77,7 @@ def build_map():
     latest_mapped_date = dfh["Date"].max()
     print(f"\n{latest_mapped_date=}")
     df_new = dfh.filter(pl.col("Date").is_null())
+    check_and_update_meetup_events()
     new_hikes = all_known_hikes().filter(
                 pl.col("Date") > latest_mapped_date
             )
@@ -84,8 +86,7 @@ def build_map():
         sf_destination = choose_uploader()
         new_file_name = f"gpx\\{sf_destination}\\{new_gpx[0]}"
         hike_date, hike_title, _, url, _ = new_hikes.row(0)
-        print(f"Parsing gpx data from: {new_gpx[0]}"
-              f"\n\tfor {hike_title}, {hike_date}")
+        print(f"Getting data for {hike_title}, {hike_date}")
         points = gpxpy_points_from_gpx_file(f"{downloads_path}\\{new_gpx[0]}")
         points_to_file(points, url)
         if new_gpx[0] in os.listdir(f"gpx\\{sf_destination}"):
@@ -108,29 +109,11 @@ def build_map():
 def hike_matching_table() -> pl.DataFrame:
     """Table of all known hikes matched with best known .gpx files
         (= first six columns of HikeDetails.csv)
-        Takes 1.5sec
+        Takes 1.28sec (down from 1.5 since switching to os.scandir())
         """
     df = all_known_hikes()
-    max_sf = max(map(int, filter(
-        lambda folder: folder.isnumeric(), os.listdir("gpx"))
-                     )
-                 )
-
-    def sub_folder(fldr: int) -> str: return f"gpx\\{fldr:02}"
-
-    gpx_data = [
-        (
-            get_date_of_gpx_file(f"{sub_folder(i_sf)}\\{gpx_file}"),
-            f"{sub_folder(i_sf)}\\{gpx_file}"
-        )
-        for i_sf in range(1, max_sf + 1)
-        for gpx_file in filter(lambda fn: fn.endswith(".gpx"),
-                               os.listdir(sub_folder(i_sf)))
-    ]
     return df.join(
-        pl.DataFrame(
-            gpx_data, schema=["Date", "GPX"], orient="row"
-        ).group_by(
+        find_all_gpx_files().group_by(
             "Date"
         ).agg(
             pl.col("GPX").first()
@@ -139,20 +122,37 @@ def hike_matching_table() -> pl.DataFrame:
     )
 
 
+def find_all_gpx_files() -> pl.DataFrame:
+    max_sf = max(
+        map(
+            int,
+            filter(lambda folder: folder.isnumeric(), os.listdir("gpx"))
+            )
+    )
+
+    def sub_folder(fldr: int) -> str:
+        if fldr == 0:
+            return downloads_path
+        return f"gpx\\{fldr:02}"
+
+    gpx_data = [
+        (
+            get_date_of_gpx_file(f"{sub_folder(i_sf)}\\{gpx_file.name}"),
+            f"{sub_folder(i_sf)}\\{gpx_file.name}",
+            gpx_file.stat().st_mtime
+        )
+        for i_sf in range(max_sf + 1)
+        for gpx_file in filter(lambda fn: fn.name.endswith(".gpx"),
+                               os.scandir(sub_folder(i_sf)))
+    ]
+    return pl.DataFrame(gpx_data, schema=["Date", "GPX", "ts"], orient="row")
+
+
 """
-    hike matching table: derive from HikeDetails.csv
-    if it doesn't exist, create it
-    It is Hike Details minus Start, End and Distance
-    It could also come from all_known_hikes matched with
-        the available GPX files 
-        (compare to all_known_hikes as an alternative way of finding new hikes?)
     New hikes, combined with newly-matched hikes and those for which
         the .pts file is out of date, form a new matching table to which
         Start, End and Distance details are added, then appended to the
         existing Hike Details (minus the ones whose .pts were recalculated)
-    Only parse .gpx files for the above subset
-    Starts, ends, distances can be calculated from the parse
-    Then draw all the lines and build the map
 """
 
 
@@ -203,8 +203,10 @@ def make_line(hike_data: dict) -> folium.GeoJson:
     gj = geojson.FeatureCollection([geojson.LineString(points)])
     return folium.GeoJson(
         gj,
-        style_function=lambda feature: {"color": "blue", "opacity": 0.3, "weight": 8},
-        highlight_function=lambda feature: {"color": "red", "opacity": 1.0, "weight": 3},
+        style_function=lambda feature:
+        {"color": "blue", "opacity": 0.3, "weight": 8},
+        highlight_function=lambda feature:
+        {"color": "red", "opacity": 1.0, "weight": 3},
         tooltip=tooltip
     )
 
@@ -270,10 +272,10 @@ def fill_blanks_in_hike_details(df_in: pl.DataFrame) -> pl.DataFrame:
     ).select(pl.exclude("Start_right", "End_right"))
 
 
-def gpxpy_points_from_gpx_file(filepath: str,
-                               reduce_points_to: int = 500) -> [geo.Location]:
+def gpxpy_points_from_gpx_file(filepath: str) -> [geo.Location]:
     """Read in a route as list of points ready to be used
         for calculations for the map"""
+    print(f"\tParsing gpx file: {filepath} . . .")
     with open(filepath, encoding="utf-8") as gpx_file:
         gpx = gpxpy.parse(gpx_file)
     no_of_points = len(gpx.tracks[0].segments[0].points)
@@ -323,6 +325,8 @@ def get_total_distance(route: [geo.Location]) -> int:
 
 def find_proximate_station(location: geo.Location) -> str | None:
     tolerance_degrees = 0.05    # equates to <= 5km either side
+    # TODO: rewrite this using gpxpy method?
+    #       - it produces results that can be different to old method
 
     def ib_args(lat_or_long: str) -> ():
         return (
@@ -550,17 +554,6 @@ def locate_station(station_name: str) -> geo.Location:
     return geo.Location(*station_pos)
 
 
-# def plot_one_hike(url: str):
-#     """Utility function to verify a route looks good before committing to it"""
-#     print("\nPlotting a single hike:")
-#     df_one = all_known_hikes().query(f"URL == '{url}'").reset_index(drop=True)
-#     df_hike_dets = generate_hike_details_csv(
-#         cumulatively_find_gpx_files(df_one)
-#     )
-#     print(df_hike_dets)
-#     build_map(True)
-
-
 # def missing_hikes(start_year: int = 2019) -> pd.DataFrame:
 #     """Utility function to generate a table of hikes for which data is still needed"""
 #     def event_page_url_stem(src: str) -> str:
@@ -642,75 +635,82 @@ def get_latest_gpx_file() -> str:
     return latest_gpx
 
 
-def df_from_gpx(path: str) -> pd.DataFrame:
+def df_from_gpx(path: str) -> pl.DataFrame:
     """Make a DataFrame containing all gpx points in the file"""
-    with open(path, encoding="utf-8") as gpx_file:
-        gpx = gpxpy.parse(gpx_file)
-    points = gpx.tracks[0].segments[0].points
+    points = gpxpy_points_from_gpx_file(path)
     data = {
-        prop: [eval(f"pt.{prop}") for pt in points]
+        prop: [pt.__getattribute__(prop) for pt in points]
         for prop in ("latitude", "longitude", "elevation", "time")
+        if prop in dir(points[0])
     }
-    return pd.DataFrame(data)
-
-
-def df_with_diffs_from_gpx(path: str) -> pd.DataFrame:
-    df = df_from_gpx(path)
-    df["time_diff"] = df["time"].diff()
-    dist_data = df[["latitude", "longitude", "elevation"]].values
-    df["dist"] = [0 if i == 0 else geo.distance(*pt, *dist_data[i - 1]) for i, pt in enumerate(dist_data)]
-    df["pace"] = df["dist"] / df["time_diff"].dt.seconds
-    # ns_diff = df["latitude"].diff().apply(lambda d: d * 10_000_000 / 90)
-    # ew_diff = df["longitude"].diff()
-    # bearing = []
-    # for i, dd in enumerate(df["dist"]):
-    #     b = 0
-    #     if dd != 0 and i != 0:
-    #         angle = math.degrees(math.acos(ns_diff[i] / dd))
-    #         if ew_diff[i] > 0:
-    #             b = angle
-    #         else:
-    #             b = 360 - angle
-    #     bearing.append(b)
-    # df["bearing"] = bearing
-    return df
+    return pl.DataFrame(data)
 
 
 def detailed_route_plot(gpx_file: str = ""):
-    """For troubleshooting purposes.  Plot a route from raw
-        gpx file, showing markers for minute-by-minute position"""
+    """Plot a route from raw gpx file, showing details in
+        regularly-spaced markers"""
     if not gpx_file:
-        gpx_file = get_latest_gpx_file()
-    df = df_from_gpx(f"gpx\\{gpx_file}")
+        latest_gpx = find_all_gpx_files().sort(
+            by="ts", descending=True
+        ).head(5).with_columns(
+            dt=(pl.col("ts") * 1_000).cast(
+                pl.Int64).cast(pl.Datetime("ms")).dt.strftime("%v %T")
+        )
+        gpx_key = input(
+            f"\nPick a file to plot:\n"
+            f"{show_options_list([
+                f"{f} ({t})" for _, f, _, t in latest_gpx.iter_rows()
+            ])}\n"
+        )
+        if gpx_key.isnumeric() and int(gpx_key) in range(1, 6):
+            gpx_file = latest_gpx[int(gpx_key) - 1, "GPX"]
+        else:
+            return
+    df = df_from_gpx(gpx_file)
     centre = tuple((df[field].mean() for field in ("latitude", "longitude")))
-    m = folium.Map(location=centre, tiles=folium.TileLayer("cartodb positron", name="Detailed"), zoom_start=14)
+    m = folium.Map(
+        location=centre,
+        tiles=folium.TileLayer("cartodb positron", name="Detailed"),
+        zoom_start=14
+    )
     points = [*zip(df["longitude"], df["latitude"])]
     gj = geojson.FeatureCollection([geojson.LineString(points)])
     line = folium.GeoJson(
         gj,
-        style_function=lambda ft: {"color": "blue", "opacity": 0.3, "weight": 5},
+        style_function=lambda ft:
+        {"color": "blue", "opacity": 0.3, "weight": 5},
     )
     line.add_to(m)
-    df_minutes = df.loc[df["time"].dt.second == 0]
-    mps = [*zip(df_minutes["longitude"], df_minutes["latitude"])]
-    mp_times = df_minutes["time"].dt.strftime("%H:%M").to_list()
-    features = []
-    for loc, time in zip(mps, mp_times):
-        feature = geojson.Feature(
-            geometry=geojson.Point(loc),
-            properties={"time": time, "loc": loc}
+    features = [
+        geojson.Feature(
+            geometry=geojson.Point((d["longitude"], d["latitude"])),
+            properties=
+            {
+                "Time": d["time"].strftime("%T %Z") if d["time"] else "",
+                "Loc.": f'{d["latitude"]},\t{d["longitude"]}'
+            }
         )
-        features.append(feature)
-    minute_markers = geojson.FeatureCollection(features)
+        for d in df[::5].iter_rows(named=True)
+    ]
+    markers = geojson.FeatureCollection(features)
     folium.GeoJson(
-        minute_markers,
-        marker=folium.Circle(radius=10, fill_color="orange", fill_opacity=0.4, color="black", weight=1),
+        markers,
+        marker=folium.Circle(
+            radius=10, fill_color="orange", fill_opacity=0.4,
+            color="black", weight=1
+        ),
         tooltip=folium.GeoJsonTooltip(
-            fields=["time", "loc"],
+            fields=["Time", "Loc."],
             style="""font-size: 30px;"""
         ),
     ).add_to(m)
-    m.save("page\\detailed.html")
+    html_file = (f"page\\detailed_"
+                 f"{re.sub(r".+\\|.gpx", "", gpx_file)}"
+                 f".html")
+    m.save(html_file)
+    webbrowser.open(
+        f"file:///C:/Users/j_a_c/Python%20Stuff/ChrisMap/{html_file}"
+    )
 
 
 def rollback(chosen_file: str = ""):
