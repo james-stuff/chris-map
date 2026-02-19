@@ -2,7 +2,6 @@
     to be pushed to GitHub for use in GitHub pages"""
 import os
 import shutil
-import pandas as pd
 import polars as pl
 import arrow
 import re
@@ -59,57 +58,77 @@ def new_map():
 def build_map():
     """assume existing HikeDetails.csv is correct and only add
         new hikes, or re-generate .pts files that are outdated"""
-    new_gpx = [
-        *filter(
-            lambda fn: fn.endswith(".gpx"),
-            os.listdir(downloads_path)
-        )
-    ]
+    new_gpx = find_files_in(downloads_path, ".gpx")["filename"].to_list()
     dfh = read_hike_details()
-    mod_times = {
-        f"{fld}_mod_time":
-            pl.Series([file_timestamp(fou) for fou in dfh[fld]])
-        for fld in ("GPX", "URL")
-    }
-    df_to_update = dfh.with_columns(**mod_times).filter(
-        pl.col("GPX_mod_time") > pl.col("URL_mod_time")
-    )
     latest_mapped_date = dfh["Date"].max()
     print(f"\n{latest_mapped_date=}")
-    df_new = dfh.filter(pl.col("Date").is_null())
     check_and_update_meetup_events()
     new_hikes = all_known_hikes().filter(
                 pl.col("Date") > latest_mapped_date
             )
-    if df_to_update.is_empty() and (len(new_hikes) == len(new_gpx) == 1):
-        print(f"One .gpx file found: {new_gpx[0]}")
-        sf_destination = choose_uploader()
-        new_file_name = f"gpx\\{sf_destination}\\{new_gpx[0]}"
-        hike_date, hike_title, _, url, _ = new_hikes.row(0)
+    # TODO: make it possible to replace files for older hikes
+    while new_gpx:
+        gpx_file = new_gpx.pop()
+        print(f"Looking at {gpx_file}:")
+        url, destination_file = allocate_gpx_to_hike(gpx_file, new_hikes)
+        hike_date, hike_title, _, url, _ = new_hikes.filter(URL=url).row(0)
         print(f"Getting data for {hike_title}, {hike_date}")
-        points = gpxpy_points_from_gpx_file(f"{downloads_path}\\{new_gpx[0]}")
+        points = gpxpy_points_from_gpx_file(destination_file)
         points_to_file(points, url)
-        if new_gpx[0] in os.listdir(f"gpx\\{sf_destination}"):
-            new_file_name += f"{int(arrow.now().timestamp())}"
-        os.rename(f"{downloads_path}\\{new_gpx[0]}", new_file_name)
-        new_file_name = ensure_correct_date_in_gpx_file(
-            f"gpx\\{sf_destination}",
-            new_file_name.split("\\")[2],
-            hike_date
-        )
         df_new = pl.DataFrame(
-            [[*new_hikes.row(0), new_file_name, *calculate_hike_particulars(points)]],
+            [
+                [
+                    *new_hikes.filter(URL=url).row(0),
+                    destination_file,
+                    *calculate_hike_particulars(points)
+                ]
+            ],
             schema=dfh.schema, orient="row"
         )
-        pl.concat([dfh, df_new]).write_csv("HikeDetails.csv")
+        dfh = pl.concat([dfh, df_new])
+    dfh.write_csv("HikeDetails.csv")
+    dfh.write_csv(f"Previous Hike Details\\{int(arrow.now().timestamp())}.csv")
     new_map()
-    return df_to_update
+    return
+
+
+def allocate_gpx_to_hike(file_path: str, df_hikes: pl.DataFrame) -> (str,):
+    filename = re.sub(r"[\w:]+\\", "", file_path)
+    gpx_subfolder = choose_uploader()
+    new_file_name = f"gpx\\{gpx_subfolder}\\{filename}"
+    hike_options = [
+        f"{h_title}, {arrow.get(h_date).format('Do MMM YYYY')}"
+        for h_date, h_title, _, _, _ in df_hikes.iter_rows()
+    ]
+    choice = input(
+        f"Allocate {filename} to which hike?\n"
+        f"{show_options_list(hike_options)}"
+    )
+    if choice.isnumeric():
+        i_hike = int(choice) - 1
+        if i_hike < len(df_hikes):
+            if any(
+                f.startswith(filename[:-4])
+                for f in os.listdir(f"gpx\\{gpx_subfolder}")
+            ):
+                new_file_name = re.sub(
+                    r"\.gpx$",
+                    f"_{int(arrow.now().timestamp())}.gpx",
+                    new_file_name
+                )
+            os.rename(f"{downloads_path}\\{filename}", new_file_name)
+            new_file_name = ensure_correct_date_in_gpx_file(
+                f"gpx\\{gpx_subfolder}",
+                new_file_name.split("\\")[2],
+                df_hikes[i_hike, "Date"]
+            )
+            return df_hikes[i_hike, "URL"], new_file_name
 
 
 def hike_matching_table() -> pl.DataFrame:
     """Table of all known hikes matched with best known .gpx files
         (= first six columns of HikeDetails.csv)
-        Takes 1.28sec (down from 1.5 since switching to os.scandir())
+        Takes 1.32sec (down from 1.5 since switching to os.scandir())
         """
     df = all_known_hikes()
     return df.join(
@@ -122,6 +141,18 @@ def hike_matching_table() -> pl.DataFrame:
     )
 
 
+def find_files_in(folder: str, file_ext: str) -> pl.DataFrame:
+    return pl.DataFrame(
+        [
+            (f"{folder}\\{file.name}", file.stat().st_mtime)
+            for file in filter(
+                lambda f: f.name.endswith(file_ext), os.scandir(folder)
+            )
+        ],
+        schema=["filename", "mod_timestamp"], orient="row"
+    )
+
+
 def find_all_gpx_files() -> pl.DataFrame:
     max_sf = max(
         map(
@@ -129,38 +160,30 @@ def find_all_gpx_files() -> pl.DataFrame:
             filter(lambda folder: folder.isnumeric(), os.listdir("gpx"))
             )
     )
-
-    def sub_folder(fldr: int) -> str:
-        if fldr == 0:
-            return downloads_path
-        return f"gpx\\{fldr:02}"
-
-    gpx_data = [
-        (
-            get_date_of_gpx_file(f"{sub_folder(i_sf)}\\{gpx_file.name}"),
-            f"{sub_folder(i_sf)}\\{gpx_file.name}",
-            gpx_file.stat().st_mtime
-        )
-        for i_sf in range(max_sf + 1)
-        for gpx_file in filter(lambda fn: fn.name.endswith(".gpx"),
-                               os.scandir(sub_folder(i_sf)))
-    ]
-    return pl.DataFrame(gpx_data, schema=["Date", "GPX", "ts"], orient="row")
-
-
-"""
-    New hikes, combined with newly-matched hikes and those for which
-        the .pts file is out of date, form a new matching table to which
-        Start, End and Distance details are added, then appended to the
-        existing Hike Details (minus the ones whose .pts were recalculated)
-"""
+    df_gpx = pl.concat(
+        [
+            find_files_in(fldr, ".gpx")
+            for fldr in [f"gpx\\{nn:02}" for nn in range(1, max_sf + 1)] +
+                        [downloads_path]
+        ]
+    )
+    return df_gpx.select(
+        Date=pl.Series(
+            [
+                gpx_date_in_file(file)
+                for file in df_gpx["filename"]
+            ]
+        ),
+        GPX=pl.col("filename"),
+        ts=pl.col("mod_timestamp")
+    )
 
 
 def choose_uploader() -> str:
     subfolders = gpx_folders_key.gpx_folders
     sf_key = input(
         f"Who produced this file?\n"
-        f"{show_options_list(subfolders.values())}\n"
+        f"{show_options_list(subfolders.values())}"
     ).zfill(2)
     if sf_key in subfolders:
         return sf_key
@@ -169,7 +192,7 @@ def choose_uploader() -> str:
 
 def show_options_list(numbered_choices: [str]) -> str:
     all_options = [
-                      f"[{i + 1}] {c}" for i, c in enumerate(numbered_choices)
+                      f"[{i}] {c}" for i, c in enumerate(numbered_choices, start=1)
                   ] + [f"[N] None of the above"]
     display_string = ""
     max_line_length = 72
@@ -180,7 +203,7 @@ def show_options_list(numbered_choices: [str]) -> str:
             current_line_length = 0
         display_string += f"\t{option_text}"
         current_line_length += len(option_text) + 1
-    return display_string
+    return display_string + "\n"
 
 
 def calculate_hike_particulars(route: [geo.Location]) -> tuple[str, str, int]:
@@ -222,24 +245,6 @@ def route_description(data: dict) -> str:
     if start == end:
         return f"Circular walk from {start}"
     return f"{start} to {end}"
-
-
-def file_timestamp(filename_or_url: str) -> float:
-    if not re.search(r"\\", filename_or_url):
-        filename_or_url = f"routes\\{filename_or_url}.pts"
-    try:
-        return os.path.getmtime(filename_or_url)
-    except FileNotFoundError:
-        return 0
-
-
-def kill_outdated_points_files(df_details: pd.DataFrame):
-    """remove any .pts file that pre-dates its corresponding .gpx file"""
-    df = df_details.loc[:, ["URL", "GPX"]]
-    df["Kill"] = df["GPX"].apply(file_timestamp) > df["URL"].apply(file_timestamp)
-    for u in df.loc[df["Kill"]]["URL"]:
-        if f"{u}.pts" in os.listdir("routes"):
-            os.remove(f"routes\\{u}.pts")
 
 
 def rebuild_hike_details() -> pl.DataFrame:
@@ -419,7 +424,7 @@ def hikes_from_subsequent_scrapes() -> pl.DataFrame:
     return pl.DataFrame({})
 
 
-def get_date_of_gpx_file(file_path: str) -> str:
+def gpx_date_in_file(file_path: str) -> str:
     with open(f"{file_path}", encoding="utf-8") as gf:
         gpx_text = gf.read()
         found_time = re.search("<time>.+</time>", gpx_text)
@@ -483,7 +488,7 @@ def ensure_correct_date_in_gpx_file(
     message = f"Setting date to {correct_date} for {folder_path}\\{filename}"
     with open(f"{folder_path}\\{filename}", encoding="utf-8") as file:
         text = file.read()
-    existing_date = get_date_of_gpx_file(f"{folder_path}\\{filename}")
+    existing_date = gpx_date_in_file(f"{folder_path}\\{filename}")
     if existing_date:
         if existing_date != correct_date:
             print(message)
@@ -568,73 +573,6 @@ def locate_station(station_name: str) -> geo.Location:
 #     return df
 
 
-def integrated_process(sub_folder: int = 7):
-    """Run as a single process that corrects date for the latest
-        GPX file and builds map with that route assigned
-        to the latest hike without a route.  Automatically
-        move .gpx file dated today from Downloads to gpx\\07 folder"""
-    # TODO: make the process more resilient by tackling:
-    #       - filename conflicts
-    #       - process is generally confusing
-    #       - what other issues have occurred?
-    #   Support multi-part hikes/events
-    dl = "C:\\Users\\j_a_c\\Downloads"
-    downloaded_gpx = [
-        *filter(lambda fn:
-                fn[-4:] == ".gpx",
-                os.listdir(dl))
-    ]
-    if downloaded_gpx:
-        file = sorted(
-            downloaded_gpx,
-            key=lambda fn: os.path.getmtime(f"{dl}\\{fn}"),
-            reverse=True
-        )[0]
-        os.rename(f"{dl}\\{file}", f"gpx\\{sub_folder:02d}\\{file}")
-        # TODO: need generate_hike_details_csv() to have the option of only
-        #       returning a DataFrame without overwriting HikeDetails.csv
-        #       (see plot_one_hike())
-        check_and_update_meetup_events()
-        hike_date = get_date_of_latest_hike_without_route()
-        gpx_file = get_latest_gpx_file()
-        if input(f"Use file {gpx_file} for hike on "
-                 f"{hike_date.strftime('%a. %d %B %Y')}? ") not in "Yy":
-            return
-        sub_folder, filename = gpx_file.split("\\")
-        ensure_correct_date_in_gpx_file(
-            f"gpx\\{sub_folder}",
-            filename,
-            (hike_date.year, hike_date.month, hike_date.day)
-        )
-        # build_map()
-    else:
-        print("No new .gpx downloads found")
-
-
-def get_date_of_latest_hike_without_route() -> pd.Timestamp:
-    df_events = hikes_from_subsequent_scrapes()
-    df_existing_hikes = pd.read_csv("HikeDetails.csv", parse_dates=[0])
-    df_temp = pd.merge(left=df_events, right=df_existing_hikes[["Date", "GPX"]], on="Date", how="left")
-    return df_temp.loc[df_temp["GPX"].isna(), "Date"].max()
-
-
-def get_latest_gpx_file() -> str:
-    """Find the most recent file added to the gpx tree.
-        Returns <gpx sub-folder name>\\<filename>"""
-    latest_gpx = ""
-    for sub_folder in os.listdir("gpx"):
-        gpx_sf = f"gpx\\{sub_folder}"
-        sf_latest = max(
-            os.listdir(gpx_sf),
-            key=lambda f: os.path.getmtime(f"{gpx_sf}\\{f}")
-        )
-        if ((not latest_gpx) or
-                os.path.getmtime(f"{gpx_sf}\\{sf_latest}") >
-                os.path.getmtime(f"gpx\\{latest_gpx}")):
-            latest_gpx = f"{sub_folder}\\{sf_latest}"
-    return latest_gpx
-
-
 def df_from_gpx(path: str) -> pl.DataFrame:
     """Make a DataFrame containing all gpx points in the file"""
     points = gpxpy_points_from_gpx_file(path)
@@ -660,7 +598,7 @@ def detailed_route_plot(gpx_file: str = ""):
             f"\nPick a file to plot:\n"
             f"{show_options_list([
                 f"{f} ({t})" for _, f, _, t in latest_gpx.iter_rows()
-            ])}\n"
+            ])}"
         )
         if gpx_key.isnumeric() and int(gpx_key) in range(1, 6):
             gpx_file = latest_gpx[int(gpx_key) - 1, "GPX"]
@@ -716,26 +654,33 @@ def detailed_route_plot(gpx_file: str = ""):
 def rollback(chosen_file: str = ""):
     """select a previous HikeDetails.csv file to roll back to,
         and delete and .pts files created after that date"""
-    # TODO: only force choice if chosen_file not passed
-    previous_files = {
-        i: (file, arrow.get(int(file[:file.index(".")]), tzinfo="local"))
-        for i, file in enumerate(os.listdir("Previous Hike Details"), start=1)
-    }
-    selected = input(
-        f"Roll back to HikeDetails.csv as of:\n"
-        f"{'\n'.join(f"\t[{ii}] {dd.format('ddd Do MMM HH:mm:ss')}"
-                     for ii, v in previous_files.items()
-                     for _, dd in [v]
-                     )}\n"
+    previous_files = dict(
+        enumerate(os.listdir("Previous Hike Details"), start=1)
     )
-    if (selected.isnumeric() and
-            (file_index := int(selected)) in previous_files):
-        chosen_file, rollback_time = previous_files[file_index]
-        os.remove("HikeDetails.csv")
-        shutil.copy(
-            f"Previous Hike Details\\{chosen_file}",
-            "HikeDetails.csv"
+    if not chosen_file:
+        selected = input(
+            f"Roll back to HikeDetails.csv created at:\n"
+            f"{show_options_list([
+                arrow.get(int(v[:-4])).format(
+                    'ddd DD MMM HH:mm:ss') + (" " * 55)
+                for v in previous_files.values() 
+                if v[:-4].isnumeric()
+            ])}"
         )
+        if (selected.isnumeric() and
+                (file_index := int(selected)) in previous_files):
+            chosen_file = previous_files[file_index]
+        else:
+            print("Invalid input")
+            return
+    rollback_time = arrow.get(int(chosen_file[:-4])) if (
+        chosen_file[:-4].isnumeric()) else 0
+    os.remove("HikeDetails.csv")
+    shutil.copy(
+        f"Previous Hike Details\\{chosen_file}",
+        "HikeDetails.csv"
+    )
+    print(f"{rollback_time=}")
         # TODO: re-instate this code when going live
         # rf = "routes"
         # pts_to_remove = filter(
@@ -745,8 +690,6 @@ def rollback(chosen_file: str = ""):
         # )
         # for pf in pts_to_remove:
         #     os.remove(f"{rf}\\{pf}")
-    else:
-        print("Invalid input")
 
 
 df_stations = build_stations_df()
@@ -759,24 +702,18 @@ if __name__ == "__main__":
                            type=str,
                            help='[B] build map\n'
                                 '[S] scrape meetup for new events\n'
-                                '[A] add the latest hike\n'
                                 '[D] plot a detailed route\n'
                                 '[R] roll back to a previous state\n')
-    my_parser.add_argument("-s", "--subfolder", type=int)
     args = my_parser.parse_args()
     op = args.Operation.upper()
 
     options = {
-        "A": integrated_process,
         "B": build_map,
         "S": check_and_update_meetup_events,
         "D": detailed_route_plot,
         "R": rollback,
     }
     if op in options:
-        if op == "A" and args.subfolder:
-            integrated_process(args.subfolder)
-        else:
-            options[op]()
+        options[op]()
     else:
         print(f"{op} is not a valid operation code")

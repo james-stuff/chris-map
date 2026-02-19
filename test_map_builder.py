@@ -79,7 +79,7 @@ def test_correcting_dates():
         mb.ensure_correct_date_in_gpx_file(test_folder, filename, ymd)
         new_fn = f"{filename[:-4]}_time-corrected.gpx"
         assert new_fn in os.listdir(test_folder)
-        assert mb.get_date_of_gpx_file(f"{test_folder}\\{new_fn}") == ymd
+        assert mb.gpx_date_in_file(f"{test_folder}\\{new_fn}") == ymd
         gpx_points = mb.gpxpy_points_from_gpx_file(f"{test_folder}\\{new_fn}")
         assert len(gpx_points) > 800
     for corrected_file in [ff for ff in os.listdir(test_folder) if ff[-19:] == "_time-corrected.gpx"]:
@@ -141,7 +141,7 @@ def test_add_new_hike_workflow():
     ).dropna(subset="GPX")
     def count_points_files() -> int: return len([f for f in os.listdir("routes") if f[-4:] == ".pts"])
     points_files_count = count_points_files()
-    mb.kill_outdated_points_files(df)
+    # mb.kill_outdated_points_files(df)
     assert count_points_files() == points_files_count - 1
     mb.build_map()
     assert count_points_files() == points_files_count + 1
@@ -158,23 +158,6 @@ def test_show_gaps():
 
 def test_debug_build():
     mb.build_map()
-
-
-def test_integrated_process():
-    """Build a process that handles the whole thing:
-            - scrape for new events
-            - find latest .gpx file
-            - match it to latest walk without a route
-            - change the date on it
-            - run the build process"""
-    # d = mb.get_date_of_latest_hike_without_route()
-    # print("\n", d)
-    # assert d.year == 2024
-    # assert d.month == 6
-    # assert d.day == 29
-    # assert mb.get_latest_gpx_file() == "08\\track_20240629_103615.gpx"#'01\\8262502218-Portugal - Copy.gpx'
-    # assert mb.get_date_of_latest_hike_without_route() == pd.Timestamp(2024, 6, 29)
-    # mb.integrated_process()
 
 
 def test_split_file_at_gaps():
@@ -256,10 +239,15 @@ def test_new_load():
 
 
 def test_new_process():
-    fn_correct, fn_previous = "1770650777.csv", "1769940683.csv"
+    print(mb.hike_matching_table())
+    assert 1 == 2
+    fn_correct, fn_previous = "1770723599.csv", "1769940683.csv"
     roland_file = "Knockholt_via_Hogtrough_Hill_to_Chelsfield"
-    os.rename(f"gpx\\11\\{roland_file}._gpx",
-              f"{mb.downloads_path}\\{roland_file}.gpx")
+    if f"{roland_file}._gpx" in os.listdir("gpx\\11"):
+        shutil.copy(
+            f"gpx\\11\\{roland_file}._gpx",
+            f"{mb.downloads_path}\\{roland_file}.gpx"
+        )
     mb.rollback(fn_previous)
     mb.build_map()
     print(f"{mb.read_hike_details()['GPX'].item(-1)=}")
@@ -268,6 +256,30 @@ def test_new_process():
         *(mb.read_hike_details(file)
           for file in ("HikeDetails.csv", fn_correct))
     )
+
+
+def test_multiple_new_gpx_files():
+    fn_correct = "HikeDetails.csv"
+    mb.rollback("1769940683.csv")
+    mb.check_and_update_meetup_events = lambda: None
+    gpx_files = [
+        "gpx\\11\\Knockholt_via_Hogtrough_Hill_to_Chelsfield",
+        "gpx\\04\\Whitstable_circular_via_Canterbury_tails_"
+    ]
+    for file in gpx_files:
+        shutil.copy(
+            f"{file}._gpx",
+            f"{mb.downloads_path}\\"
+            f"{re.search(r'[A-Z].+', file).group()}.gpx"
+        )
+    mb.build_map()
+    print(f"{mb.read_hike_details()['GPX'].tail(3)=}")
+    print(f"{mb.read_hike_details(fn_correct)['GPX'].tail(3)=}")
+    # assert_frame_equal(
+    #     *(mb.read_hike_details(file)
+    #       for file in ("HikeDetails.csv", f"Previous Hike Details\\{fn_correct}"))
+    # )
+
 
 
 def test_own_file():
@@ -293,7 +305,7 @@ def test_rebuild():
     print(f"{df_new.filter(pl.col('Date').str.starts_with('2025-07-0'))}")
     assert_frame_equal(
         df_new,
-        mb.read_hike_details("1770650777.csv").cast({pl.Float64: pl.Int64})
+        mb.read_hike_details("1770723599.csv").cast({pl.Float64: pl.Int64})
     )
 
 
