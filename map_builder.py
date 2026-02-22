@@ -617,6 +617,14 @@ def detailed_route_plot(gpx_file: str = ""):
         gj,
         style_function=lambda ft:
         {"color": "blue", "opacity": 0.3, "weight": 5},
+        tooltip=folium.Tooltip(
+            f"{distance_description(
+                get_total_distance(
+                    [geo.Location(*pt[::-1]) for pt in points]
+                )
+        )}",
+            style="font-size: 30px;"
+        )
     )
     line.add_to(m)
     features = [
