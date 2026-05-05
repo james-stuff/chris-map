@@ -86,6 +86,7 @@ def build_map():
             schema=dfh.schema, orient="row"
         )
         dfh = pl.concat([dfh, df_new])
+    dfh = fill_blanks_in_hike_details(dfh)
     dfh.write_csv("HikeDetails.csv")
     dfh.write_csv(f"Previous Hike Details\\{int(arrow.now().timestamp())}.csv")
     new_map()
@@ -153,7 +154,7 @@ def find_files_in(folder: str, file_ext: str) -> pl.DataFrame:
     )
 
 
-def find_all_gpx_files() -> pl.DataFrame:
+def find_all_gpx_files(include_plans: bool = False) -> pl.DataFrame:
     max_sf = max(
         map(
             int,
@@ -164,7 +165,7 @@ def find_all_gpx_files() -> pl.DataFrame:
         [
             find_files_in(fldr, ".gpx")
             for fldr in [f"gpx\\{nn:02}" for nn in range(1, max_sf + 1)] +
-                        [downloads_path]
+                        [downloads_path] + (["gpx\\plans"] * include_plans)
         ]
     )
     return df_gpx.select(
@@ -588,7 +589,7 @@ def detailed_route_plot(gpx_file: str = ""):
     """Plot a route from raw gpx file, showing details in
         regularly-spaced markers"""
     if not gpx_file:
-        latest_gpx = find_all_gpx_files().sort(
+        latest_gpx = find_all_gpx_files(include_plans=True).sort(
             by="ts", descending=True
         ).head(5).with_columns(
             dt=(pl.col("ts") * 1_000).cast(
