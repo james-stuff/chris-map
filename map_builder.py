@@ -53,6 +53,9 @@ def new_map():
 
     map_file = "page\\map.html"
     m.save(map_file)
+    webbrowser.open(
+        f"file:///C:/Users/j_a_c/Python%20Stuff/ChrisMap/page/map.html"
+    )
 
 
 def build_map():
@@ -70,30 +73,31 @@ def build_map():
     while new_gpx:
         gpx_file = new_gpx.pop()
         print(f"Looking at {gpx_file}:")
-        url, destination_file = allocate_gpx_to_hike(gpx_file, new_hikes)
-        hike_date, hike_title, _, url, _ = new_hikes.filter(URL=url).row(0)
-        print(f"Getting data for {hike_title}, {hike_date}")
-        points = gpxpy_points_from_gpx_file(destination_file)
-        points_to_file(points, url)
-        df_new = pl.DataFrame(
-            [
+        chosen_hike = allocate_gpx_to_hike(gpx_file, new_hikes)
+        if chosen_hike:
+            url, destination_file = chosen_hike
+            hike_date, hike_title, _, url, _ = new_hikes.filter(URL=url).row(0)
+            print(f"Getting data for {hike_title}, {hike_date}")
+            points = gpxpy_points_from_gpx_file(destination_file)
+            points_to_file(points, url)
+            df_new = pl.DataFrame(
                 [
-                    *new_hikes.filter(URL=url).row(0),
-                    destination_file,
-                    *calculate_hike_particulars(points)
-                ]
-            ],
-            schema=dfh.schema, orient="row"
-        )
-        dfh = pl.concat([dfh, df_new])
+                    [
+                        *new_hikes.filter(URL=url).row(0),
+                        destination_file,
+                        *calculate_hike_particulars(points)
+                    ]
+                ],
+                schema=dfh.schema, orient="row"
+            )
+            dfh = pl.concat([dfh, df_new])
     dfh = fill_blanks_in_hike_details(dfh)
     dfh.write_csv("HikeDetails.csv")
     dfh.write_csv(f"Previous Hike Details\\{int(arrow.now().timestamp())}.csv")
     new_map()
-    return
 
 
-def allocate_gpx_to_hike(file_path: str, df_hikes: pl.DataFrame) -> (str,):
+def allocate_gpx_to_hike(file_path: str, df_hikes: pl.DataFrame) -> tuple[str, str] | None:
     filename = re.sub(r"[\w:]+\\", "", file_path)
     gpx_subfolder = choose_uploader()
     new_file_name = f"gpx\\{gpx_subfolder}\\{filename}"
@@ -186,12 +190,27 @@ def choose_uploader() -> str:
         f"Who produced this file?\n"
         f"{show_options_list(subfolders.values())}"
     ).zfill(2)
+    if sf_key.upper() == "0N":
+        new_uploader = input("Enter new uploader name: ")
+        sf_key = f"{int(max(subfolders.keys())) + 1:02}"
+        subfolders[sf_key] = new_uploader
+        with open("gpx_folders_key.py", "w", encoding="utf-8") as new_file:
+            new_file.write(
+                re.sub(
+                    r"'\d{2}'",
+                    lambda m: f"\n\t{m.group()}",
+                    f"gpx_folders = {subfolders}"
+                ).replace(
+                    "}", "\n}"
+                )
+            )
+        os.mkdir(f"gpx\\{sf_key}")
     if sf_key in subfolders:
         return sf_key
     return "07"
 
 
-def show_options_list(numbered_choices: [str]) -> str:
+def show_options_list(numbered_choices: list[str]) -> str:
     all_options = [
                       f"[{i}] {c}" for i, c in enumerate(numbered_choices, start=1)
                   ] + [f"[N] None of the above"]
@@ -553,10 +572,9 @@ def snip_at(file_path: str, station_name: str, discard_before: bool = True):
 
 
 def locate_station(station_name: str) -> geo.Location:
-    df_stations = build_stations_df().to_pandas()
-    station_pos = df_stations.query(
-        f"station_name.str.startswith('{station_name}')"
-    ).iloc[0, [1, 2]].to_list()
+    station_pos = build_stations_df().filter(
+        station_name=station_name
+    ).row(0)[1:]
     return geo.Location(*station_pos)
 
 
