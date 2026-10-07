@@ -18,12 +18,24 @@ import webbrowser
 
 
 downloads_path = "C:\\Users\\j_a_c\\Downloads"
+carto_base_map = folium.TileLayer(
+    'https://basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png?'
+    'key=cb1_4d5m_1_9d20d581cbfdf075227f6f4a',
+    attr='&copy; <a href="https://www.openstreetmap.org/copyright">'
+         'OpenStreetMap</a> contributors, '
+         '&copy; <a href="https://carto.com/attribution/">CARTO</a>',
+    name="Clear"
+)
 
 
 def new_map():
     print("Building map:")
     dfh = read_hike_details()
-    m = folium.Map(location=(51.5, -0.15), tiles=folium.TileLayer("cartodb positron", name="Clear"), zoom_start=9)
+    m = folium.Map(
+        location=(51.5, -0.15),
+        tiles=carto_base_map,
+        zoom_start=9
+    )
     folium.TileLayer('https://tile.thunderforest.com/transport/{z}/{x}/{y}.png?apikey=a23a350629204ae8b1e22f0729186cb1',
                      attr='&copy; <a href="http://www.thunderforest.com/">Thunderforest</a>, &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
                      name="Railways").add_to(m)
@@ -627,7 +639,7 @@ def detailed_route_plot(gpx_file: str = ""):
     centre = tuple((df[field].mean() for field in ("latitude", "longitude")))
     m = folium.Map(
         location=centre,
-        tiles=folium.TileLayer("cartodb positron", name="Detailed"),
+        tiles=carto_base_map,
         zoom_start=14
     )
     points = [*zip(df["longitude"], df["latitude"])]
